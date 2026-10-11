@@ -2641,7 +2641,7 @@ Test("Release versions read tags with or without v and order pre-releases before
         Require(ReleaseVersion.Parse(bad) is null && !ReleaseVersion.IsNewer(bad, "0.0.1"), "malformed tag accepted: " + bad);
 });
 Exception? Failure(Task task) { try { task.Wait(); return null; } catch (AggregateException e) { return e.InnerException; } }
-const string ReleaseDownload = "https://github.com/NIGos/dcs-control/releases/download/";
+const string ReleaseDownload = "https://github.com/anpeaco/dcs-control/releases/download/";
 string ReleaseList(params object[] releases) => System.Text.Json.JsonSerializer.Serialize(releases);
 object GitHubRelease(string tag, bool draft = false, bool assets = true, string? body = null, string? assetRoot = null) => new
 {
@@ -2662,15 +2662,15 @@ Test("Release selection ignores drafts and malformed tags, takes the highest new
     Require(Updates.Select(ReleaseList(GitHubRelease("v0.5.7")), "0.5.7-preview")?.Version == "0.5.7", "the release after its pre-release");
     // A release without a setup (or with assets off this repository's download path) can only be opened on GitHub.
     Require(Updates.Select(ReleaseList(GitHubRelease("v0.5.7-preview", assets: false)), "0.5.6-preview") is { CanInstall: false, SetupUrl: null });
-    Require(Updates.Select(ReleaseList(GitHubRelease("v0.5.7-preview", assetRoot: "https://example.com/NIGos/dcs-control/releases/download/v0.5.7-preview/")), "0.5.6-preview") is { CanInstall: false });
+    Require(Updates.Select(ReleaseList(GitHubRelease("v0.5.7-preview", assetRoot: "https://example.com/anpeaco/dcs-control/releases/download/v0.5.7-preview/")), "0.5.6-preview") is { CanInstall: false });
     Require(Updates.Select(ReleaseList(new { tag_name = "v0.5.7", draft = false, html_url = "https://evil.example/", body = (string?)null }), "0.5.6") is { PageUrl: Updates.ReleasesPage, Notes: "" });
     Throws<System.Text.Json.JsonException>(() => Updates.Select("<html>", "0.5.6"));
 });
 Test("Update downloads only from this repository's release assets", () =>
 {
     Require(Updates.AllowedAssetUrl(ReleaseDownload + "v0.5.7-preview/DcsControl-0.5.7-preview-Setup.exe"));
-    foreach (var url in new[] { "http://github.com/NIGos/dcs-control/releases/download/v1/x.exe", "https://github.com.evil.example/NIGos/dcs-control/releases/download/v1/x.exe",
-        "https://github.com/Other/dcs-control/releases/download/v1/x.exe", "https://github.com:8443/NIGos/dcs-control/releases/download/v1/x.exe", "https://github.com/NIGos/dcs-control/releases/download/../../x.exe", "not a url" })
+    foreach (var url in new[] { "http://github.com/anpeaco/dcs-control/releases/download/v1/x.exe", "https://github.com.evil.example/anpeaco/dcs-control/releases/download/v1/x.exe",
+        "https://github.com/Other/dcs-control/releases/download/v1/x.exe", "https://github.com/NIGos/dcs-control/releases/download/v1/x.exe", "https://github.com:8443/anpeaco/dcs-control/releases/download/v1/x.exe", "https://github.com/anpeaco/dcs-control/releases/download/../../x.exe", "not a url" })
         Require(!Updates.AllowedAssetUrl(url), "allowed: " + url);
 });
 Test("The update check asks GitHub at most every 6 hours unless forced, and offline keeps what it knew", () =>
@@ -2765,6 +2765,14 @@ Test("App settings: update checks on by default, saved, unknown keys tolerated; 
     var updated = new AppSettingsStore(Path.Combine(root, "app-settings-updated"));
     Require(updated.TakeWhatsNew("0.5.6-preview", usedBefore: true) && !updated.TakeWhatsNew("0.5.6-preview", usedBefore: true));
     Require(updated.TakeWhatsNew("0.5.7-preview", usedBefore: false) && updated.Load() is { LastSeenVersion: "0.5.7-preview", CheckForUpdates: true }, "a later version shows again; the check setting is kept");
+});
+
+Test("Updates come only from the Quest 3 fork's releases, signed with its own key", () =>
+{
+    Require(Updates.Repository == "anpeaco/dcs-control" && Updates.ReleasesUrl == "https://api.github.com/repos/anpeaco/dcs-control/releases?per_page=10" && Updates.ReleasesPage == "https://github.com/anpeaco/dcs-control/releases");
+    // The official release key (NIGos/dcs-control) is not trusted: its setups would replace the fork's.
+    Require(!Updates.PublicKeyPem.Contains("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/4DiOD0+w2x0KP7/AbUoQkQyJyHD") && Updates.PublicKeyPem.Contains("BEGIN PUBLIC KEY"));
+    using var key = System.Security.Cryptography.ECDsa.Create(); key.ImportFromPem(Updates.PublicKeyPem); Require(key.KeySize == 256, "an ECDSA P-256 key");
 });
 
 // Quest 3 through Virtual Desktop (VDXR): frame generation and fixed-focus Quad Views only.

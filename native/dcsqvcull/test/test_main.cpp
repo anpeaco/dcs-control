@@ -386,10 +386,26 @@ int main() {
             !InsideBlock(block, eye + Vec3{0.32, 0, 1} * 100.0, 0.1),
         "keep=1 matches focus frustum");
 
-  // QVFR log on this machine (may be held open for writing by a running DCS).
+  // QVFR log on this machine (may be held open for writing by a running DCS). A PC where Quad-Views-Foveated never
+  // ran a quad views session (not installed, or bypassed for every app) has nothing to parse: SKIP, like the
+  // DCS-dependent checks (dcs_install.h).
+  auto qvfrSession = [] {
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return false;
+    std::wstring path = std::wstring(base) + L"\\Quad-Views-Foveated\\Quad-Views-Foveated.log";
+    FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
+    if (!f) return false;
+    std::string text;
+    char buf[65536];
+    size_t r;
+    while ((r = fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, r);
+    fclose(f);
+    return text.find("Session is using quad views") != std::string::npos;
+  };
   double sm = ReadQvfrSmoothing();
   printf("     qvfr smoothing read: %.2f\n", sm);
-  Check(sm >= 0.0 && sm < 0.5, "QVFR smoothing parsed");
+  if (qvfrSession()) Check(sm >= 0.0 && sm < 0.5, "QVFR smoothing parsed");
+  else printf("SKIP QVFR smoothing parsed: no Quad-Views-Foveated session in its log on this PC\n");
   sm = 0.30;
   g_qvSmoothing = sm;
   Check(std::fabs(EffectiveKeep() - 0.35) < 1e-9, "auto keep = 1 - 2*0.30 - 0.05");

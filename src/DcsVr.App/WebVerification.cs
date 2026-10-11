@@ -120,7 +120,7 @@ internal static class WebVerification
         using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
         var setup = System.Text.Encoding.UTF8.GetBytes("Offline update fixture. Never executed.");
         var signature = Convert.ToBase64String(key.SignData(setup, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
-        var name = $"DcsControl-{next}-Setup.exe"; var download = $"https://github.com/NIGos/dcs-control/releases/download/v{next}/";
+        var name = $"DcsControl-{next}-Setup.exe"; var download = $"https://github.com/{Updates.Repository}/releases/download/v{next}/";
         const string notes = "**Hostile notes check** <img src=x onerror=\"window.notesInjected=true\"> <script>window.notesInjected=true</script>\n\n- First bullet with `code`\n  - Nested bullet\n- Second bullet\n\nA [link](https://example.invalid/) in a paragraph.";
         object Release(string tag, bool draft, string body, object[] assets) => new { tag_name = tag, draft, prerelease = true, html_url = Updates.ReleasesPage + "/tag/" + tag, body, published_at = "2026-10-11T12:00:00Z", assets };
         var releases = JsonSerializer.Serialize(new[] {
@@ -228,7 +228,7 @@ internal static class WebVerification
             var setupName = $"DcsControl-{update.Version}-Setup.exe";
             if (!downloads.SequenceEqual([setupName, setupName + ".sig"]) || !update.Updates.VerifyFile(Path.Combine(update.Updates.DownloadRoot, update.Version, setupName)))
                 throw new IOException("The update download did not end with only the verified setup: " + string.Join(", ", downloads));
-            if (update.Handler.Requests.Any(r => !r.StartsWith("https://api.github.com/", StringComparison.Ordinal) && !r.StartsWith("https://github.com/NIGos/dcs-control/releases/download/", StringComparison.Ordinal)))
+            if (update.Handler.Requests.Any(r => !r.StartsWith("https://api.github.com/", StringComparison.Ordinal) && !r.StartsWith("https://github.com/" + Updates.Repository + "/releases/download/", StringComparison.Ordinal)))
                 throw new IOException("The update asked another address: " + string.Join(", ", update.Handler.Requests));
             if (new AppSettingsStore(service.StateRoot).Load().LastSeenVersion != ProductInfo.Version) throw new IOException("What's new was not recorded as seen.");
             // The neutral demo layout alone keeps the regular renders (release previews); DCSVR_SMOKE_DOC_VIEWS=1 makes the

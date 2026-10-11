@@ -73,14 +73,17 @@ public sealed record UpdateCheck(DateTimeOffset CheckedAt, string CurrentVersion
 /// </summary>
 public sealed partial class Updates
 {
-    public const string ReleasesUrl = "https://api.github.com/repos/NIGos/dcs-control/releases?per_page=10";
-    public const string ReleasesPage = "https://github.com/NIGos/dcs-control/releases";
-    /// <summary>The public half of the release signing key. scripts/sign-release.ps1 signs each release's setup and ZIP with
-    /// the private half, which never leaves the release machine; scripts/verify-web-release.py reads this constant.</summary>
+    /// <summary>The GitHub repository whose releases this build installs: the Quest 3 fork's own, so an official DCS Control
+    /// release (NIGos/dcs-control, signed with its own key) is never offered or installed over it.</summary>
+    public const string Repository = "anpeaco/dcs-control";
+    public const string ReleasesUrl = "https://api.github.com/repos/" + Repository + "/releases?per_page=10";
+    public const string ReleasesPage = "https://github.com/" + Repository + "/releases";
+    /// <summary>The public half of the fork's release signing key. scripts/sign-release.ps1 signs each release's setup and
+    /// ZIP with the private half, which never leaves the release machine; scripts/verify-web-release.py reads this constant.</summary>
     public const string PublicKeyPem = """
         -----BEGIN PUBLIC KEY-----
-        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/4DiOD0+w2x0KP7/AbUoQkQyJyHD
-        DcE8ZmbDQ1WbKHq7iSScQ/IMj1uyElcchVCv9IK4PWfxwtndZJ1uSKpm3A==
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEw8iMeIn7AZICoQ9CGSIBDAo0hlXS
+        be9AgTq42R/HhvZZiF8RazZ5rtO2fsK385CqK6G6qx0izfz+cIBIfPgmBA==
         -----END PUBLIC KEY-----
         """;
     public static readonly TimeSpan Interval = TimeSpan.FromHours(6);
@@ -90,7 +93,7 @@ public sealed partial class Updates
     /// <summary>A download that receives nothing for this long stops (HttpClient's timeout covers only the headers).</summary>
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(60);
     private const long MaxSetupBytes = 1L << 30, MaxListBytes = 4 << 20, MaxSignatureBytes = 4096;
-    private const string AssetPath = "/NIGos/dcs-control/releases/download/";
+    private const string AssetPath = "/" + Repository + "/releases/download/";
     /// <summary>Hosts a download may be redirected to: GitHub's release asset storage.</summary>
     private static readonly string[] DownloadHosts = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
 
