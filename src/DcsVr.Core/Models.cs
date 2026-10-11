@@ -3,7 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace DcsVr.Core;
 
-public enum RuntimeKind { Pimax, SboysSteamVr }
+/// <summary>The headset route. <see cref="VirtualDesktop"/>: a Meta Quest 3 streamed by Virtual Desktop through its own
+/// OpenXR runtime (VDXR); frame generation and fixed-focus Quad Views only (<see cref="VrProfile.ForLaunch"/>).</summary>
+public enum RuntimeKind { Pimax, SboysSteamVr, VirtualDesktop }
 public enum QuadProvider { None, PimaxNative, QuadViewsFoveated }
 public enum FrameGeneration { Off, Nvidia, FidelityFx }
 public enum GazeMode { Fixed, EyeTracked }
@@ -13,6 +15,8 @@ public enum NeuralDepthMode { Game, Normal, Reversed }
 public enum NeuralStyle { Standard, Natural, Cinematic }
 public enum NvidiaFlowPreset { Fast, Medium, Slow }
 public enum FpsLimitMode { Preserve, RuntimeHeadroom, MatchRefresh, Custom }
+/// <summary>Corner of OFXR's always-on FPS counter ([overlay] position).</summary>
+public enum OverlayCorner { UpperRight, UpperLeft, LowerLeft, LowerRight }
 public enum IssueSeverity { Info, Warning, Error }
 /// <summary>Where the bundled Quad Views focus area comes from: Pimax Play's own Quad Views settings, read (never
 /// written) at preview, apply and launch, or the values stored in the profile.</summary>
@@ -129,6 +133,31 @@ public sealed record VrProfile
     public bool DiagnosticRecorder { get; init; } = true;
     /// <summary>OFXR's always-on FPS counter; the diagnostic panel (its own key) shows FPS on demand.</summary>
     public bool ShowOverlay { get; init; }
+    /// <summary>Where <see cref="ShowOverlay"/> draws the counter.</summary>
+    public OverlayCorner OverlayPosition { get; init; }
+    // Advanced OFXR settings ([ofxr] in ofxr_bridge.ini). Each default is the layer's own, so a profile that never
+    // touches them runs exactly as before they were written.
+    /// <summary>own_binding_queue (fork patch 0007): the D3D11 bridge hands the runtime a D3D12 queue of the layer's own, so
+    /// a submission waits only for its own synthesis. Measured to remove missed frames on Pimax; not yet measured on
+    /// Virtual Desktop, which the original fork had measured slightly slower with it.</summary>
+    public bool OfxrOwnBindingQueue { get; init; } = true;
+    /// <summary>display_time_correction (patch 0003): the display time DCS is told moves to the refresh its real frame is
+    /// shown on, so head poses are predicted for when the frame is actually seen.</summary>
+    public bool OfxrDisplayTimeCorrection { get; init; } = true;
+    /// <summary>adaptive_probe (patch 0007): in Auto, a steady 3× tries 2× every 20 s (with back-off) to see whether DCS
+    /// can hold half the refresh rate again.</summary>
+    public bool OfxrAdaptiveProbe { get; init; } = true;
+    /// <summary>late_frame_skip (patch 0006): in 3×, a first generated frame that keeps missing its refresh is replaced by
+    /// the previous real frame. A last resort for 3× stutter; off by default.</summary>
+    public bool OfxrLateFrameSkip { get; init; }
+    /// <summary>visibility_mask (patch 0008): optical flow and synthesis skip the pixels outside the lens, where the runtime
+    /// reports a visibility mask.</summary>
+    public bool OfxrVisibilityMask { get; init; } = true;
+    /// <summary>history_in_place (patch 0008): frame generation reads DCS's frames where they are instead of copying them.</summary>
+    public bool OfxrHistoryInPlace { get; init; } = true;
+    /// <summary>lazy_runtime_swapchains (patch 0008): the runtime's images for DCS's swapchains are made only when DCS submits
+    /// one, which saves video memory for swapchains DCS never shows.</summary>
+    public bool OfxrLazySwapchains { get; init; } = true;
     public FpsLimitMode FpsLimit { get; init; }
     public double HeadsetRefreshHz { get; init; } = 90;
     /// <summary>The refresh rate is read from the headset software (<see cref="HeadsetRefresh"/>) whenever it can be;
@@ -304,9 +333,18 @@ public sealed record VrProfile
     /// blending, in focus radii), at most Cheeky's 0.3.</summary>
     public double NeuralEdgeFeather => Math.Min(0.3, 2 * QuadEdgeBlend);
     /// <summary>What a launch runs: with <see cref="Desktop"/> (Optimizations only) the VR features are off, whatever the
-    /// profile keeps for the next VR flight; otherwise the profile itself.</summary>
+    /// profile keeps for the next VR flight. On <see cref="RuntimeKind.VirtualDesktop"/> (Quest 3) only frame generation
+    /// and Quad Views with a fixed focus run: no DLSS 5 or Foveated Super Resolution (so no Cheeky, no dxgi.dll in DCS's
+    /// bin), no Pimax native Quad Views, no eye tracking, pupil shift or Tobii pause. The profile keeps those settings for
+    /// a Pimax or Sboys flight. Otherwise the profile itself.</summary>
     public VrProfile ForLaunch() => Desktop
         ? this with { QuadViews = QuadProvider.None, NeuralRendering = false, FoveatedDlss = false, FrameGen = FrameGeneration.Off, QuadFocusAdapter = false, PauseTobiiDesktop = false }
+        : Runtime == RuntimeKind.VirtualDesktop
+        ? this with
+        {
+            QuadViews = QuadViews == QuadProvider.PimaxNative ? QuadProvider.None : QuadViews, NeuralRendering = false, FoveatedDlss = false,
+            QuadFocusAdapter = false, Gaze = GazeMode.Fixed, PupilShift = false, PauseTobiiDesktop = false
+        }
         : this;
     public override string ToString() => Name;
 }
@@ -340,7 +378,17 @@ public sealed record InventorySnapshot
     public string? ActiveRuntime { get; init; }
     public string? PimaxRuntime { get; init; }
     public string? SteamVrRuntime { get; init; }
+    /// <summary>Virtual Desktop's OpenXR runtime manifest (VDXR, virtualdesktop-openxr.json).</summary>
+    public string? VirtualDesktopRuntime { get; init; }
     public string? PimaxVersion { get; init; }
+    /// <summary>The runtime manifest a route uses when the profile does not name its own.</summary>
+    public string? RuntimeFor(RuntimeKind route) => route switch
+    {
+        RuntimeKind.Pimax => PimaxRuntime,
+        RuntimeKind.SboysSteamVr => SteamVrRuntime,
+        RuntimeKind.VirtualDesktop => VirtualDesktopRuntime,
+        _ => null
+    };
     public string? SboysDirectory { get; init; }
     public string? SboysConfigPath { get; init; }
     public bool DcsRunning { get; init; }
@@ -428,8 +476,44 @@ public static class JsonData
         ?? throw new InvalidDataException("The JSON document is empty.");
 }
 
+/// <summary>How the interface and the checks name a headset route.</summary>
+public static class Routes
+{
+    /// <summary>The runtime a profile on this route uses, as in "This profile uses …".</summary>
+    public static string Runtime(RuntimeKind route) => route switch
+    {
+        RuntimeKind.SboysSteamVr => "Sboys through SteamVR",
+        RuntimeKind.VirtualDesktop => "Virtual Desktop's OpenXR runtime (VDXR)",
+        _ => "the Pimax runtime"
+    };
+    /// <summary>The headset software where the pilot sets refresh rate, image and motion smoothing.</summary>
+    public static string Software(RuntimeKind route) => route switch
+    {
+        RuntimeKind.SboysSteamVr => "SteamVR",
+        RuntimeKind.VirtualDesktop => "Virtual Desktop",
+        _ => "Pimax Play"
+    };
+    /// <summary>"How you fly", as Detect my setup proposes it.</summary>
+    public static string Label(RuntimeKind route) => route switch
+    {
+        RuntimeKind.SboysSteamVr => "Sboys · SteamVR OpenXR",
+        RuntimeKind.VirtualDesktop => "Quest 3 · Virtual Desktop (VDXR)",
+        _ => "Pimax OpenXR"
+    };
+}
+
 public static class ProfilePresets
 {
+    /// <summary>Quest 3 through Virtual Desktop: OFXR frame generation only. The refresh rate is set in the Virtual
+    /// Desktop app on the headset and cannot be read on the PC, so it is the profile's own (90 Hz until changed).</summary>
+    public static VrProfile QuestFramegen { get; } = new()
+    {
+        Id = "vd-framegen", Name = "Quest 3 · framegen", Runtime = RuntimeKind.VirtualDesktop, QuadViews = QuadProvider.None,
+        FrameGen = FrameGeneration.Nvidia, Gaze = GazeMode.Fixed, FoveaSource = FoveaSource.Profile, RefreshFromHeadset = false
+    };
+    /// <summary>Fixed focus for a headset without eye tracking: the eyes move inside it, so it is wider than an eye-tracked
+    /// one (Quad-Views-Foveated's own fixed fallback is 0.5 × 0.45) and its periphery sharper (its Oculus default, 0.4).</summary>
+    public const double QuestFoveaWidth = .55, QuestFoveaHeight = .5, QuestPeripheralScale = .4;
     public static IReadOnlyList<VrProfile> All { get; } = [
         new(),
         new() { Id = "pimax-framegen", Name = "Pimax · Quad Views + framegen", FrameGen = FrameGeneration.Nvidia },
@@ -437,6 +521,12 @@ public static class ProfilePresets
         new() { Id = "pimax-neural", Name = "Pimax · DLSS 5 + framegen (no Quad Views)", QuadViews = QuadProvider.None, FrameGen = FrameGeneration.Nvidia, FoveatedDlss = true, NeuralRendering = true },
         new() { Id = "sboys-neural", Name = "Sboys · DLSS 5 + framegen (no Quad Views)", Runtime = RuntimeKind.SboysSteamVr, QuadViews = QuadProvider.None, FrameGen = FrameGeneration.Nvidia, FoveatedDlss = true, NeuralRendering = true },
         new() { Id = "pimax-combined", Name = "Pimax · DLSS 5 + framegen + Quad Views", QuadViews = QuadProvider.QuadViewsFoveated, QuadFocusAdapter = true, FrameGen = FrameGeneration.Nvidia, NeuralRendering = true },
-        new() { Id = "sboys-combined", Name = "Sboys · DLSS 5 + framegen + Quad Views", Runtime = RuntimeKind.SboysSteamVr, QuadViews = QuadProvider.QuadViewsFoveated, QuadFocusAdapter = true, FrameGen = FrameGeneration.Nvidia, NeuralRendering = true }
+        new() { Id = "sboys-combined", Name = "Sboys · DLSS 5 + framegen + Quad Views", Runtime = RuntimeKind.SboysSteamVr, QuadViews = QuadProvider.QuadViewsFoveated, QuadFocusAdapter = true, FrameGen = FrameGeneration.Nvidia, NeuralRendering = true },
+        QuestFramegen,
+        QuestFramegen with
+        {
+            Id = "vd-framegen-quadviews", Name = "Quest 3 · framegen + fixed Quad Views", QuadViews = QuadProvider.QuadViewsFoveated,
+            FoveaWidth = QuestFoveaWidth, FoveaHeight = QuestFoveaHeight, PeripheralScale = QuestPeripheralScale, QuadFocusScale = 1
+        }
     ];
 }

@@ -46,7 +46,7 @@ public static class Readiness
                 : $"DCS's bin folder has {dxgi.Name}'s dxgi.dll ({dxgi.Path}). DLSS 5 needs that file name: Launch DCS backs it up and sets it aside while this profile is applied, so {dxgi.Name} is off in DCS until Back to stock DCS puts it back.");
         var running = profile.Desktop ? new ActiveRouteState(null, "", default) : ActiveRouteProvider();
         if (running.Route is { } activeRoute && activeRoute != profile.Runtime)
-            Add("route-mismatch", CheckState.Error, "Headset route", running.Summary + " This profile uses " + (profile.Runtime == RuntimeKind.Pimax ? "the Pimax runtime" : "Sboys through SteamVR") + ". Switch the profile route, or close the other runtime, before launching.");
+            Add("route-mismatch", CheckState.Error, "Headset route", running.Summary + " This profile uses " + Routes.Runtime(profile.Runtime) + ". Switch the profile route, or close the other runtime, before launching.");
         else if (running.Route is not null) Add("route-mismatch", CheckState.Pass, "Headset route", running.Summary);
         if (inventory.DcsExecutable?.Contains(@"\steamapps\", StringComparison.OrdinalIgnoreCase) == true)
             Add("steam-relaunch", CheckState.Manual, "Steam edition launch", "Keep Steam running and launch DCS from this app. The profile passes Steam's launch identifiers so DCS does not restart through Steam and lose the profile environment. After the first launch, confirm the OFXR overlay or 'Available Layers' in dcs.log.");
@@ -57,7 +57,7 @@ public static class Readiness
         var foreign = inventory.Layers.Where(l => l.Enabled && !GazeBridge.IsManaged(l, profile)).Select(l => l.Name ?? Path.GetFileName(l.ManifestPath)).ToArray();
         if (foreign.Length > 0 && !profile.Desktop)
             Add("implicit-layers", CheckState.Warning, "Other VR add-ons (OpenXR layers)", "These implicit layers load above the profile layers and can intercept views, gaze or frames: " + string.Join(", ", foreign) + ". Disable them (for example with OpenXR API Layers GUI) for the first tests.");
-        var manifest = profile.RuntimeManifestPath ?? (profile.Runtime == RuntimeKind.Pimax ? inventory.PimaxRuntime : inventory.SteamVrRuntime);
+        var manifest = profile.RuntimeManifestPath ?? inventory.RuntimeFor(profile.Runtime);
         if (!profile.Desktop) try
         {
             using var json = JsonDocument.Parse(File.ReadAllText(manifest ?? throw new InvalidDataException("Runtime manifest was not detected.")));
@@ -67,7 +67,7 @@ public static class Readiness
             Add("runtime", CheckState.Pass, "Selected OpenXR runtime", manifest! + " → " + dll);
         }
         catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or KeyNotFoundException or ArgumentException or InvalidOperationException)
-        { Add("runtime", CheckState.Error, "Selected OpenXR runtime", e.Message, profile.Runtime == RuntimeKind.Pimax ? "pimax" : "steamvr"); }
+        { Add("runtime", CheckState.Error, "Selected OpenXR runtime", e.Message, profile.Runtime switch { RuntimeKind.Pimax => "pimax", RuntimeKind.VirtualDesktop => "virtualdesktop", _ => "steamvr" }); }
         var missingVc = new[] { "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll" }.Where(n => !NativeBinary.IsX64(Path.Combine(Environment.SystemDirectory, n))).ToArray();
         var vcFile = Path.Combine(Environment.SystemDirectory, "vcruntime140.dll");
         var vcVersion = File.Exists(vcFile) ? System.Diagnostics.FileVersionInfo.GetVersionInfo(vcFile).FileVersion : null;
@@ -103,7 +103,10 @@ public static class Readiness
         if (profile.Desktop)
             Add("desktop", CheckState.Manual, "Optimizations only", "DCS runs as you set it up, with another headset or on the monitor, using your own VR settings and OpenXR runtime. The app adds only Engine Optimizations, CPU Boost and Free VRAM as selected.");
         else
-        Add("headset", CheckState.Manual, "Headset and tracking", "Connect your headset. Check image, IPD, tracking and resolution in Pimax Play (or SteamVR) before launching DCS.", profile.Runtime == RuntimeKind.Pimax ? "pimax" : "sboys");
+        Add("headset", CheckState.Manual, "Headset and tracking", profile.Runtime == RuntimeKind.VirtualDesktop
+            ? "Connect the Quest 3 to Virtual Desktop and leave its OpenXR runtime set to VDXR (Streamer, OpenXR Runtime: Automatic or VDXR). Check resolution, frame rate and SSW in the Virtual Desktop app before launching DCS."
+            : "Connect your headset. Check image, IPD, tracking and resolution in Pimax Play (or SteamVR) before launching DCS.",
+            profile.Runtime switch { RuntimeKind.Pimax => "pimax", RuntimeKind.VirtualDesktop => "virtualdesktop", _ => "sboys" });
         if (profile.Gaze == GazeMode.EyeTracked && profile.QuadViews != QuadProvider.None)
             Add("gaze-live", CheckState.Manual, "Eye calibration and focus motion", "Enable and calibrate eye tracking in Pimax. Verify focus follows both eyes in the headset; a detected layer does not prove gaze is valid.", "gaze");
         if (!profile.Desktop)

@@ -48,7 +48,7 @@ public sealed class DeploymentPlanner(ComponentLocations components)
         // no OpenXR variable at all, so none is required or pinned.
         if (!profile.Desktop)
         {
-            var runtime = profile.RuntimeManifestPath ?? (profile.Runtime == RuntimeKind.Pimax ? inventory.PimaxRuntime : inventory.SteamVrRuntime);
+            var runtime = profile.RuntimeManifestPath ?? inventory.RuntimeFor(profile.Runtime);
             if (runtime is null || !File.Exists(runtime)) throw new InvalidDataException("OpenXR runtime manifest unavailable.");
             using (var document = JsonDocument.Parse(File.ReadAllText(runtime)))
             {
@@ -364,8 +364,12 @@ public static class GazeBridge
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
     }
 
-    /// <summary>Implicit layers the profile controls. Any other enabled implicit layer loads above the profile layers.</summary>
+    /// <summary>Implicit layers the profile controls. Any other enabled implicit layer loads above the profile layers.
+    /// Virtual Desktop's own compatibility layer belongs to the Quest 3 route's runtime and is not reported there.</summary>
     public static bool IsManaged(LayerFact layer, VrProfile profile) =>
         layer.Name is "XR_APILAYER_MBUCCHIA_quad_views_foveated" or "XR_APILAYER_CHEEKY_foveated_dlss" or "XR_APILAYER_XRFrameBridge_diagnostic"
-        || (Required(profile) && IsGazeLayer(layer));
+        || (Required(profile) && IsGazeLayer(layer))
+        || (profile.Runtime == RuntimeKind.VirtualDesktop && layer.Name == VirtualDesktopCompatibilityLayer);
+
+    public const string VirtualDesktopCompatibilityLayer = "XR_APILAYER_VIRTUALDESKTOP_oculus_compatibility";
 }

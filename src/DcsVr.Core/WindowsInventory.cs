@@ -24,16 +24,26 @@ public sealed class WindowsInventory
 
     /// <summary>The Pimax OpenXR runtime manifest: under Program Files, else wherever the registered runtimes say
     /// (Pimax Play installed on another drive).</summary>
-    public static string PimaxRuntimeManifest(string? activeRuntime)
+    public static string PimaxRuntimeManifest(string? activeRuntime) =>
+        RegisteredRuntime(@"Pimax\Runtime\PiOpenXR_64.json", name => name.StartsWith("PiOpenXR", StringComparison.OrdinalIgnoreCase), activeRuntime);
+
+    /// <summary>Virtual Desktop's OpenXR runtime (VDXR, shipped with the Virtual Desktop Streamer): under Program Files,
+    /// else wherever the registered runtimes say. Its 32-bit manifest (virtualdesktop-openxr-32.json) is never chosen.</summary>
+    public static string VirtualDesktopRuntimeManifest(string? activeRuntime) =>
+        RegisteredRuntime(@"Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json", name => name.Equals("virtualdesktop-openxr.json", StringComparison.OrdinalIgnoreCase), activeRuntime);
+
+    /// <summary>A runtime manifest at its standard place under Program Files, else the active or a registered runtime whose
+    /// file name matches; the standard path when none exists.</summary>
+    private static string RegisteredRuntime(string standardRelative, Func<string, bool> fileName, string? activeRuntime)
     {
-        var standard = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Pimax\Runtime\PiOpenXR_64.json");
+        var standard = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), standardRelative);
         if (File.Exists(standard)) return standard;
-        static bool Pimax(string? path) => path is not null && Path.GetFileName(path).StartsWith("PiOpenXR", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
-        if (Pimax(activeRuntime)) return Path.GetFullPath(activeRuntime!);
+        bool Matches(string? path) => path is not null && fileName(Path.GetFileName(path)) && File.Exists(path);
+        if (Matches(activeRuntime)) return Path.GetFullPath(activeRuntime!);
         try
         {
             using var runtimes = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Khronos\OpenXR\1\AvailableRuntimes");
-            if (runtimes?.GetValueNames().FirstOrDefault(Pimax) is { } found) return Path.GetFullPath(found);
+            if (runtimes?.GetValueNames().FirstOrDefault(Matches) is { } found) return Path.GetFullPath(found);
         }
         catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { }
         return standard;
@@ -78,6 +88,7 @@ public sealed class WindowsInventory
         if (options is not null && !File.Exists(options)) { observations.Add("The selected options.lua file does not exist."); options = null; }
         var activeRuntime = ReadString(RegistryHive.LocalMachine, @"SOFTWARE\Khronos\OpenXR\1", "ActiveRuntime", observations);
         var pimaxManifest = PimaxRuntimeManifest(activeRuntime);
+        var vdManifest = VirtualDesktopRuntimeManifest(activeRuntime);
         var steamDirectory = installed.FirstOrDefault(p => p.Name.Equals("SteamVR", StringComparison.OrdinalIgnoreCase)).Directory;
         steamDirectory ??= libraries.Select(p => Path.Combine(p, "steamapps/common/SteamVR")).FirstOrDefault(p => File.Exists(Path.Combine(p, "steamxr_win64.json")));
         var steamManifest = steamDirectory is not null ? Path.Combine(steamDirectory, "steamxr_win64.json") : null;
@@ -127,6 +138,7 @@ public sealed class WindowsInventory
             DcsDirectory = dcsDirectory, DcsExecutable = executable, OptionsPath = options,
             ActiveRuntime = activeRuntime, PimaxRuntime = File.Exists(pimaxManifest) ? pimaxManifest : null,
             SteamVrRuntime = steamManifest is not null && File.Exists(steamManifest) ? steamManifest : null,
+            VirtualDesktopRuntime = File.Exists(vdManifest) ? vdManifest : null,
             PimaxVersion = pimax.Version, SboysConfigPath = File.Exists(sboysConfig) ? sboysConfig : null,
             SboysDirectory = drivers.FirstOrDefault(d => d.Name.Contains("customheadset", StringComparison.OrdinalIgnoreCase))?.Directory, DcsRunning = dcsRunning,
             Files = files, Layers = layers, Drivers = drivers, DcsSettings = settings, Observations = observations,

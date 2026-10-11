@@ -11,7 +11,8 @@ public sealed record HeadsetRefreshFact(double Hz, string Source);
 /// (profile.json display_timing_selection, which varies by headset), so the rate is read from its logs: first the
 /// compositor's live rate in the runtime log (%LOCALAPPDATA%\Pimax\runtime), then the end-of-session report in
 /// %LOCALAPPDATA%\Pimax\PiService\Log, whose <c>"fps_target"</c> is the headset's rate (its <c>"refresh_rate"</c> is the
-/// monitor's). On the Sboys route SteamVR's preferred refresh rate is read from steamvr.vrsettings. Nothing is ever written.
+/// monitor's). On the Sboys route SteamVR's preferred refresh rate is read from steamvr.vrsettings. On the Quest 3 route
+/// (Virtual Desktop) nothing on the PC holds it, so the profile's own rate is used. Nothing is ever written.
 /// </summary>
 public static partial class HeadsetRefresh
 {
@@ -36,9 +37,13 @@ public static partial class HeadsetRefresh
         var key = runtime + "|" + PimaxRuntimeFolder + "|" + PimaxLogFolder + "|" + SteamVrSettings;
         var now = Environment.TickCount64;
         if (Volatile.Read(ref _detectCache) is { } cached && cached.Key == key && now - cached.At < 3000) return cached.Fact;
-        var fact = runtime == RuntimeKind.SboysSteamVr
-            ? SetupDetection.ReadSteamVrRefresh(SteamVrSettings) is { } steam ? new HeadsetRefreshFact(steam, "SteamVR") : null
-            : ReadPimaxRuntime(PimaxRuntimeFolder) ?? ReadPimax(PimaxLogFolder);
+        var fact = runtime switch
+        {
+            RuntimeKind.SboysSteamVr => SetupDetection.ReadSteamVrRefresh(SteamVrSettings) is { } steam ? new HeadsetRefreshFact(steam, "SteamVR") : null,
+            RuntimeKind.Pimax => ReadPimaxRuntime(PimaxRuntimeFolder) ?? ReadPimax(PimaxLogFolder),
+            // Virtual Desktop keeps its frame rate in the headset app; neither its PC settings nor VDXR's log hold it.
+            _ => null
+        };
         Volatile.Write(ref _detectCache, new Cached(key, fact, now));
         return fact;
     }

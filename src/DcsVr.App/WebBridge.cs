@@ -407,6 +407,7 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
                         "gaze" => "https://github.com/mbucchia/Quad-Views-Foveated/wiki/Pimax-Crystal",
                         "pimax" => "https://pimax.com/pages/downloads",
                         "steamvr" => "https://store.steampowered.com/app/250820/SteamVR/",
+                        "virtualdesktop" => "https://www.vrdesktop.net/",
                         "vcredist" => "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist",
                         "nvidia" => "https://www.nvidia.com/en-us/drivers/", _ => throw new InvalidDataException("Unknown setup guide.") };
                     using (var process = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })) { } break;
@@ -694,7 +695,7 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
         var activeRoute = ActiveRoute();
         var issues = ProfileValidation.Validate(service.ResolveNeuralRuntime(_profile), CurrentInventory).ToList();
         if (!_profile.Desktop && activeRoute.Route is { } running && running != _profile.Runtime)
-            issues.Insert(0, new("route-mismatch", IssueSeverity.Warning, activeRoute.Summary + " This profile uses " + (_profile.Runtime == RuntimeKind.Pimax ? "the Pimax runtime" : "Sboys through SteamVR") + ". Switch the route or use Detect my setup before applying."));
+            issues.Insert(0, new("route-mismatch", IssueSeverity.Warning, activeRoute.Summary + " This profile uses " + Routes.Runtime(_profile.Runtime) + ". Switch the route or use Detect my setup before applying."));
         if (FoveaFact(_profile) is { } fact) issues.Add(fact);
         var launcherBlocked = LaunchSafety.LauncherRestartBlocked;
         if (_profile.KeepDcsLauncher && launcherBlocked) issues.Insert(0, new("dcs-launcher", IssueSeverity.Error, LaunchSafety.LauncherBlockedMessage));

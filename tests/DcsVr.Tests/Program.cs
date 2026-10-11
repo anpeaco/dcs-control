@@ -2158,7 +2158,8 @@ Test("Desktop Tobii pause: only the desktop tracker's services, never the headse
 
 Test("Profiles saved without foveaSource keep their own focus values; new profiles follow Pimax Play", () =>
 {
-    Require(new VrProfile().FoveaSource == FoveaSource.PimaxPlay && ProfilePresets.All.All(p => p.FoveaSource == FoveaSource.PimaxPlay), "New profiles and presets follow Pimax Play");
+    Require(new VrProfile().FoveaSource == FoveaSource.PimaxPlay && ProfilePresets.All.Where(p => p.Runtime != RuntimeKind.VirtualDesktop).All(p => p.FoveaSource == FoveaSource.PimaxPlay), "New profiles and presets follow Pimax Play");
+    Require(ProfilePresets.All.Where(p => p.Runtime == RuntimeKind.VirtualDesktop).All(p => p.FoveaSource == FoveaSource.Profile), "Quest 3 presets use their own focus values");
     var node = System.Text.Json.Nodes.JsonNode.Parse(JsonData.Serialize(new VrProfile { QuadViews = QuadProvider.QuadViewsFoveated, FoveaWidth = .44 }))!.AsObject();
     Require(JsonData.Deserialize<VrProfile>(node.ToJsonString()).FoveaSource == FoveaSource.PimaxPlay, "A saved source is kept");
     node.Remove("foveaSource");
@@ -2764,6 +2765,127 @@ Test("App settings: update checks on by default, saved, unknown keys tolerated; 
     var updated = new AppSettingsStore(Path.Combine(root, "app-settings-updated"));
     Require(updated.TakeWhatsNew("0.5.6-preview", usedBefore: true) && !updated.TakeWhatsNew("0.5.6-preview", usedBefore: true));
     Require(updated.TakeWhatsNew("0.5.7-preview", usedBefore: false) && updated.Load() is { LastSeenVersion: "0.5.7-preview", CheckForUpdates: true }, "a later version shows again; the check setting is kept");
+});
+
+// Quest 3 through Virtual Desktop (VDXR): frame generation and fixed-focus Quad Views only.
+Test("Quest 3 launches leave out DLSS 5, Cheeky, eye tracking, pupil shift and Pimax Quad Views, and keep them in the profile", () =>
+{
+    var p = new VrProfile { Runtime = RuntimeKind.VirtualDesktop, QuadViews = QuadProvider.PimaxNative, NeuralRendering = true, FoveatedDlss = true, QuadFocusAdapter = true,
+        Gaze = GazeMode.EyeTracked, PupilShift = true, PauseTobiiDesktop = true, FrameGen = FrameGeneration.Nvidia };
+    var launch = p.ForLaunch();
+    Require(launch is { QuadViews: QuadProvider.None, NeuralRendering: false, FoveatedDlss: false, QuadFocusAdapter: false, Gaze: GazeMode.Fixed, PupilShift: false, PauseTobiiDesktop: false, FrameGen: FrameGeneration.Nvidia });
+    Require(!launch.UsesCheeky && !launch.UsesQuadFocus && !launch.UsesPupilShift && !launch.UsesTobiiPause, "nothing of Cheeky or the eye-tracked layers runs");
+    Require(p.NeuralRendering && p.PupilShift, "the profile itself keeps them for a Pimax or Sboys flight");
+    Require((p with { QuadViews = QuadProvider.QuadViewsFoveated }).ForLaunch().QuadViews == QuadProvider.QuadViewsFoveated, "bundled Quad Views stays when chosen");
+    Require(ProfileValidation.ResolveFeatures(p).QuadViews == QuadProvider.None, "the checklist settles Pimax Quad Views to off, not to bundled Quad Views");
+    Require(!ProfileValidation.Validate(p).Any(i => i.Code is "quad-cheeky" or "quad-runtime" or "neural-runtime" or "pupil-gaze"), "nothing left out is reported as a problem");
+    var bin = Path.GetFullPath(Path.Combine(root, "quest-folders", "bin"));
+    Require(!LaunchSafety.ProfileFolders(p, new() { DcsExecutable = Path.Combine(bin, "DCS.exe") }).Contains(bin), "DCS's bin folder is never a target");
+    Require(LaunchSafety.ProfileFolders(p with { Runtime = RuntimeKind.Pimax }, new() { DcsExecutable = Path.Combine(bin, "DCS.exe") }).Contains(bin), "while the same profile on Pimax writes Cheeky there");
+});
+Test("Quest 3 presets: framegen alone, and framegen with a wider fixed focus; both validate and survive JSON", () =>
+{
+    var framegen = ProfilePresets.All.Single(x => x.Id == "vd-framegen"); var quad = ProfilePresets.All.Single(x => x.Id == "vd-framegen-quadviews");
+    Require(ProfilePresets.All.Take(7).Select(x => x.Id).SequenceEqual(["pimax-baseline", "pimax-framegen", "sboys-framegen", "pimax-neural", "sboys-neural", "pimax-combined", "sboys-combined"]), "existing presets keep their order");
+    Require(framegen is { Runtime: RuntimeKind.VirtualDesktop, QuadViews: QuadProvider.None, FrameGen: FrameGeneration.Nvidia, Gaze: GazeMode.Fixed, NeuralRendering: false, FoveaSource: FoveaSource.Profile });
+    Require(quad is { QuadViews: QuadProvider.QuadViewsFoveated, Gaze: GazeMode.Fixed, FoveaWidth: ProfilePresets.QuestFoveaWidth, FoveaHeight: ProfilePresets.QuestFoveaHeight, PeripheralScale: ProfilePresets.QuestPeripheralScale });
+    foreach (var preset in new[] { framegen, quad })
+    {
+        Require(!ProfileValidation.Validate(preset).Any(i => i.Severity != IssueSeverity.Info), preset.Id + " has no warning or error");
+        Require(JsonData.Deserialize<VrProfile>(JsonData.Serialize(preset)) == preset && JsonData.Serialize(preset).Contains("\"runtime\": \"VirtualDesktop\""), preset.Id + " round trip");
+    }
+    Require(!PimaxFovea.UsesPimaxPlay(quad with { FoveaSource = FoveaSource.PimaxPlay }), "Pimax Play's focus values never apply to a Quest 3");
+});
+Test("Quest 3 refresh rate is the profile's own and must be one the Quest 3 runs at", () =>
+{
+    Require(HeadsetRefresh.Detect(RuntimeKind.VirtualDesktop) is null, "nothing on the PC holds Virtual Desktop's frame rate");
+    var p = ProfilePresets.QuestFramegen with { RefreshFromHeadset = true, HeadsetRefreshHz = 120 };
+    Require(HeadsetRefresh.Resolve(p).HeadsetRefreshHz == 120 && FramePacing.RequestedCap(p with { FpsLimit = FpsLimitMode.MatchRefresh }) == 60);
+    foreach (var hz in new double[] { 72, 80, 90, 120 }) Require(!ProfileValidation.Validate(p with { HeadsetRefreshHz = hz }).Any(i => i.Code == "quest-refresh"), hz + " Hz");
+    Require(ProfileValidation.Validate(p with { HeadsetRefreshHz = 75 }).Single(i => i.Code == "quest-refresh").Severity == IssueSeverity.Warning);
+    var checks = FramePacing.Checks(p, new());
+    Require(checks.Single(c => c.Id == "runtime-reprojection").Title == "Virtual Desktop SSW" && checks.Single(c => c.Id == "refresh-rate").Detail.Contains("in Virtual Desktop."));
+});
+foreach (var withQuadViews in new[] { false, true })
+    Test("Quest 3 deployment through VDXR " + (withQuadViews ? "with fixed Quad Views" : "with framegen only"), () =>
+    {
+        var dir = "quest-" + (withQuadViews ? "quad" : "framegen"); var exe = Make(dir + "/bin/DCS.exe", "fixture"); var options = Make(dir + "/options.lua", Lua);
+        var vdxr = Make(dir + "/vd/virtualdesktop-openxr.json", "{\"runtime\":{\"library_path\":\".\\\\virtualdesktop-openxr.dll\"}}"); Make(dir + "/vd/virtualdesktop-openxr.dll", "fixture");
+        var pimax = Make(dir + "/pimax.json", "{\"runtime\":{\"library_path\":\"pimax.dll\"}}"); Make(dir + "/pimax.dll", "fixture");
+        // DLSS 5 and pupil shift left on in the profile: neither may reach DCS on this route.
+        var p = (withQuadViews ? ProfilePresets.All.Single(x => x.Id == "vd-framegen-quadviews") : ProfilePresets.QuestFramegen) with { NeuralRendering = true, PupilShift = true, Gaze = GazeMode.EyeTracked };
+        var inv = new InventorySnapshot { DcsExecutable = exe, OptionsPath = options, PimaxRuntime = pimax, SteamVrRuntime = pimax, VirtualDesktopRuntime = vdxr };
+        var plan = new DeploymentPlanner(new(null, null, null, Path.Combine(workspace, "external/quadviews/bin/x64/Release"), null, DeferredOfxr)).Build(p, inv, Path.Combine(root, dir + "/managed"));
+        var env = plan.LaunchEnvironment;
+        Require(env["XR_RUNTIME_JSON"] == Path.GetFullPath(vdxr), "DCS gets VDXR, never the Pimax or SteamVR runtime");
+        Require(env["XR_ENABLE_API_LAYERS"] == (withQuadViews ? "XR_APILAYER_MBUCCHIA_quad_views_foveated;XR_APILAYER_XRFrameBridge_diagnostic" : "XR_APILAYER_XRFrameBridge_diagnostic"));
+        Require(env["DCSVR_QUAD_FOCUS"] == "0" && env["DCSVR_NR_HOTKEY"] == "0:0" && env["DCSVR_PUPIL_HOTKEY"] == "0:0" && !env.ContainsKey("CHEEKY_OPENXR_LAYER_DISABLE"));
+        Require(env["DISABLE_XR_APILAYER_MBUCCHIA_quad_views_foveated"] == "1" && env["XRFG_DISABLE_OFXR_BRIDGE"] == "1", "a global Quad Views or tray OFXR stays out");
+        var bin = Path.GetDirectoryName(exe)!;
+        Require(!plan.Files.Any(f => f.Path.StartsWith(bin + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)), "nothing is written to DCS's bin folder: no dxgi.dll, no Cheeky");
+        Require(!plan.Files.Any(f => f.Path.Contains("pupilshift", StringComparison.OrdinalIgnoreCase) || f.Path.Contains("cheeky", StringComparison.OrdinalIgnoreCase)));
+        var lua = new LuaOptions(System.Text.Encoding.UTF8.GetString(plan.Files.Single(f => f.Path == Path.GetFullPath(options)).Content));
+        Require(lua.Get("VR", "enable") == "true" && lua.Get("graphics", "Upscaling") == "\"DLSS\"", "VR on; DCS's own upscaler left as the user set it");
+        var ini = System.Text.Encoding.Unicode.GetString(plan.Files.Single(f => f.Path.EndsWith("ofxr_bridge.ini")).Content);
+        Require(ini.Contains("enabled=1") && ini.Contains("d3d11_bridge=1") && ini.Contains("own_binding_queue=1") && ini.Contains("backend=nvidia"));
+        if (withQuadViews)
+        {
+            var cfg = System.Text.Encoding.UTF8.GetString(plan.Files.Single(f => f.Path.EndsWith("settings.cfg")).Content);
+            foreach (var expected in new[] { "force_no_eye_tracking=1", "horizontal_fixed_section=0.55", "vertical_fixed_section=0.5", "peripheral_multiplier=0.4", "focus_multiplier=1", "dcsvr_saccade_widening=0", "dcsvr_gaze_deadzone=0" })
+                Require(cfg.Contains(expected), expected);
+        }
+        var store = new OriginalsStore(Path.Combine(root, dir + "/originals")); store.Apply(plan); Require(store.RestoreOriginals().Complete); Require(File.ReadAllText(options) == Lua);
+    });
+Test("Quest 3 needs VDXR; another route's runtime is never used instead", () =>
+{
+    var inv = new InventorySnapshot { DcsExecutable = Make("quest-no-vdxr/bin/DCS.exe", "fixture"), OptionsPath = Make("quest-no-vdxr/options.lua", Lua), PimaxRuntime = Make("quest-no-vdxr/pimax.json", "{}") };
+    Require(ProfileValidation.Validate(ProfilePresets.QuestFramegen, inv).Single(i => i.Code == "vdxr-not-found").Severity == IssueSeverity.Error);
+    Require(!ProfileValidation.Validate(ProfilePresets.QuestFramegen with { RuntimeManifestPath = inv.PimaxRuntime }, inv).Any(i => i.Code == "vdxr-not-found"), "a runtime the pilot chose is accepted");
+    Require(inv.RuntimeFor(RuntimeKind.VirtualDesktop) is null && inv.RuntimeFor(RuntimeKind.Pimax) == inv.PimaxRuntime);
+    Throws<InvalidDataException>(() => new DeploymentPlanner(new(null, null, null, null, null, DeferredOfxr)).Build(ProfilePresets.QuestFramegen, inv, Path.Combine(root, "quest-no-vdxr/managed")));
+});
+Test("Advanced OFXR settings: every key exists in the layer, defaults are the layer's, and the FPS counter takes any corner", () =>
+{
+    var ini = ConfigurationWriters.Ofxr(new() { FrameGen = FrameGeneration.Nvidia });
+    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "position=off" })
+        Require(ini.Contains(expected), expected);
+    var source = File.ReadAllText(Path.Combine(workspace, "external/ofxr-djules75/src/common/implicit_layer.cpp"));
+    foreach (var key in ini.Split('\n').Select(l => l.Trim()).Where(l => l.Contains('=') && !l.StartsWith('[')).Select(l => l.Split('=')[0]).Except(["max_file_mb", "flush_each_event", "logging_enabled", "position", "enabled", "motion_vectors"]))
+        Require(source.Contains("L\"" + key + "\"", StringComparison.Ordinal), key + " is read by OFXR");
+    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
+    var written = ConfigurationWriters.Ofxr(tuned);
+    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "position=lower_left" })
+        Require(written.Contains(expected), expected);
+    foreach (var (corner, value) in new[] { (OverlayCorner.UpperRight, "upper_right"), (OverlayCorner.UpperLeft, "upper_left"), (OverlayCorner.LowerRight, "lower_right") })
+        Require(ConfigurationWriters.Ofxr(tuned with { OverlayPosition = corner }).Contains("position=" + value), value);
+    Require(JsonData.Deserialize<VrProfile>(JsonData.Serialize(tuned)) == tuned);
+    var older = System.Text.Json.Nodes.JsonNode.Parse(JsonData.Serialize(new VrProfile()))!.AsObject();
+    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains" }) Require(older.Remove(name), name);
+    Require(JsonData.Deserialize<VrProfile>(older.ToJsonString()) == new VrProfile(), "a profile saved before these settings loads with the layer's defaults");
+    Require(ProfileValidation.Validate(new() { OverlayPosition = (OverlayCorner)9 }).Any(i => i.Code == "overlay-position"));
+});
+Test("Detect my setup: a running Virtual Desktop Streamer proposes the Quest 3 route with a fixed focus and no DLSS 5 search", () =>
+{
+    var missing = Path.Combine(root, "quest-detect/missing.txt");
+    var vd = new DetectionSources { SteamVrServerLog = missing, PimaxPlaySettings = Make("quest-detect/global.json", PimaxJson(1, .66, .20, .66, .66)), NeuralRuntimeFolders = [], ProcessRunning = name => name == "VirtualDesktop.Streamer" };
+    Require(SetupDetection.DetectActiveRoute(vd).Route == RuntimeKind.VirtualDesktop);
+    var result = SetupDetection.Detect(ProfilePresets.All.Single(x => x.Id == "pimax-combined"), new(), vd);
+    Require(result.Profile is { Runtime: RuntimeKind.VirtualDesktop, Gaze: GazeMode.Fixed, FoveaSource: FoveaSource.Profile, Desktop: false } && result.Detected.Any(d => d.Value.StartsWith("Quest 3")));
+    Require(result.Profile.FoveaWidth == new VrProfile().FoveaWidth && !result.Detected.Any(d => d.Field.StartsWith("pimax:")), "Pimax Play's focus values are not read");
+    Require(!result.Notes.Any(n => n.Contains("nvngx_dlssnr")) && result.Notes.Any(n => n.Contains("SSW")), "no DLSS 5 file is looked for; the frame rate and SSW are pointed out");
+    // SteamVR running Sboys is still Sboys, even with the Streamer open; SteamVR running another headset beside the Streamer is the Quest.
+    var sboysLog = Make("quest-detect/vrserver.txt", "Active HMD set to CustomHeadsetOpenVR.PimaxSlamCustomHMD\n");
+    Require(SetupDetection.DetectActiveRoute(new() { SteamVrServerLog = sboysLog, ProcessRunning = name => name is "vrserver" or "VirtualDesktop.Streamer" }).Route == RuntimeKind.SboysSteamVr);
+    var otherLog = Make("quest-detect/vrserver-vd.txt", "Active HMD set to virtualdesktop.Quest3\n");
+    Require(SetupDetection.DetectActiveRoute(new() { SteamVrServerLog = otherLog, ProcessRunning = name => name is "vrserver" or "VirtualDesktop.Streamer" }).Route == RuntimeKind.VirtualDesktop);
+    Require(SetupDetection.DetectActiveRoute(new() { SteamVrServerLog = otherLog, ProcessRunning = name => name == "vrserver" }).Route is null, "without the Streamer SteamVR's headset is not assumed to be a Quest");
+});
+Test("Quest 3: CPU Boost confines the Streamer, checks name Virtual Desktop, and its own OpenXR layer is not a foreign add-on", () =>
+{
+    Require(BoostPlanner.VrRuntimeServices(ProfilePresets.QuestFramegen).SequenceEqual(["VirtualDesktop.Streamer", "VirtualDesktop.Service"]));
+    var compatibility = new LayerFact("LocalMachine", "vd.json", true, GazeBridge.VirtualDesktopCompatibilityLayer, "vd.dll", true);
+    Require(GazeBridge.IsManaged(compatibility, ProfilePresets.QuestFramegen) && !GazeBridge.IsManaged(compatibility, new VrProfile()), "only on the Quest route");
+    Require(Routes.Runtime(RuntimeKind.VirtualDesktop).Contains("VDXR") && Routes.Software(RuntimeKind.VirtualDesktop) == "Virtual Desktop" && Routes.Runtime(RuntimeKind.Pimax) == "the Pimax runtime" && Routes.Runtime(RuntimeKind.SboysSteamVr) == "Sboys through SteamVR");
 });
 
 foreach (var (name, action) in tests)

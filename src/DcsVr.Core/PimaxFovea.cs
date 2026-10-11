@@ -150,8 +150,10 @@ public static class PimaxFovea
     public const string SameLabelNote = "Pimax Play's Quick and Fine modes use the same % for different sizes: Quick Horizontal FOV 33% leaves a focus of 67% of the view, while Fine Left → Center 33% and Right → Center 10% leave 57%.";
     public const string Explanation = "Pimax Play's runtime renders the focus as the view minus what each slider leaves outside it: Quick, 100% − Horizontal or Vertical FOV per axis; Fine, 100% − Left → Center − Right → Center (and Top/Bottom). Center Resolution 125% is a 1.125× pixel density in Pimax's runtime log; the periphery factor is used as stored (Peripheral Resolution 20% is 0.1919). Verified against the focus resolutions Pimax logs (Quick 33% → 4088×4038, Fine 33/10 · 33/33 → 3478×2048 per eye at 5424×5356).";
 
+    /// <remarks>Never on the Quest 3 route: Pimax Play's values are for a Pimax headset.</remarks>
     public static bool UsesPimaxPlay(VrProfile profile) =>
-        profile.FoveaSource == FoveaSource.PimaxPlay && profile.QuadViews == QuadProvider.QuadViewsFoveated && string.IsNullOrWhiteSpace(profile.QuadViewsLayerDirectory);
+        profile.FoveaSource == FoveaSource.PimaxPlay && profile.QuadViews == QuadProvider.QuadViewsFoveated && string.IsNullOrWhiteSpace(profile.QuadViewsLayerDirectory)
+        && profile.Runtime != RuntimeKind.VirtualDesktop;
 
     public static PimaxQuadViewsSettings? Read(string? path = null)
     {

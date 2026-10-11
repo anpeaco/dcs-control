@@ -180,6 +180,9 @@ public static partial class Diagnostics
                 if (sources.SteamVrSettings is { } settings && Path.GetDirectoryName(Path.GetDirectoryName(settings)) is { } steam)
                     foreach (var name in new[] { "vrserver.txt", "vrcompositor.txt", "vrclient_DCS.txt" }) File_("steamvr/logs/" + name, Path.Combine(steam, "logs", name));
             }
+            // VDXR's log (device, resolution, extensions DCS asked for). Not StreamerSettings.json: it holds account tokens.
+            if (sources.Runtime == RuntimeKind.VirtualDesktop)
+                File_("virtualdesktop/OpenXR.log", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Virtual Desktop", "OpenXR.log"));
             Folder("pimax/runtime", Path.Combine(local, "Pimax", "runtime"), "pvr_srv_log_*", 1);
             File_("pimax/runtime/pvr_client_DCS_log.txt", Path.Combine(local, "Pimax", "runtime", "pvr_client_DCS_log.txt"));
             File_("pimax/runtime/profile.json", Path.Combine(local, "Pimax", "runtime", "profile.json"));

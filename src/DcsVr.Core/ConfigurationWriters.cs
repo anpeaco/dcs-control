@@ -274,6 +274,13 @@ public static class ConfigurationWriters
         diag_vram={(p.DiagnosticVram ? 1 : 0)}
         smooth_cursor={(p.SmoothCursor ? 1 : 0)}
         cursor_templates={cursorTemplates ?? ""}
+        own_binding_queue={(p.OfxrOwnBindingQueue ? 1 : 0)}
+        display_time_correction={(p.OfxrDisplayTimeCorrection ? 1 : 0)}
+        adaptive_probe={(p.OfxrAdaptiveProbe ? 1 : 0)}
+        late_frame_skip={(p.OfxrLateFrameSkip ? 1 : 0)}
+        visibility_mask={(p.OfxrVisibilityMask ? 1 : 0)}
+        history_in_place={(p.OfxrHistoryInPlace ? 1 : 0)}
+        lazy_runtime_swapchains={(p.OfxrLazySwapchains ? 1 : 0)}
 
         [diagnostics]
         logging_enabled={(p.DiagnosticRecorder ? 1 : 0)}
@@ -281,9 +288,17 @@ public static class ConfigurationWriters
         flush_each_event=0
 
         [overlay]
-        position={(p.ShowOverlay ? "upper_right" : "off")}
+        position={(p.ShowOverlay ? OverlayPosition(p.OverlayPosition) : "off")}
 
         """;
+
+    private static string OverlayPosition(OverlayCorner corner) => corner switch
+    {
+        OverlayCorner.UpperLeft => "upper_left",
+        OverlayCorner.LowerLeft => "lower_left",
+        OverlayCorner.LowerRight => "lower_right",
+        _ => "upper_right"
+    };
 
     /// <summary>PupilShift.ini, next to the pupil shift layer, which re-reads it about once a second while DCS runs.</summary>
     public static string PupilShift(VrProfile p, double? ipdMm = null) => $"""

@@ -51,6 +51,8 @@ public static partial class BoostPlanner
             "pi_server", "pi_overlay", "PiPlayService", "pi_vst", "PimaxClient",
             "platform_runtime_*_service", "Tobii.Service"
         ],
+        // VDXR runs inside DCS; the Streamer encodes and sends the frames, so it keeps its priority.
+        RuntimeKind.VirtualDesktop => ["VirtualDesktop.Streamer", "VirtualDesktop.Service"],
         _ => []
     };
 

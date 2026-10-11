@@ -21,6 +21,10 @@ public static class ProfileValidation
     {
         // Optimizations only keeps the VR settings for the next VR flight; VrProfile.ForLaunch is what runs.
         if (profile.FoveatedDlss && profile.QuadViews != QuadProvider.None) profile = profile with { FoveatedDlss = false };
+        // Quest 3 (Virtual Desktop): Pimax's own Quad Views does not exist there and the bundled one is an option, off
+        // until chosen. DLSS 5 stays in the profile for another route; VrProfile.ForLaunch leaves it out on this one.
+        if (profile.QuadViews == QuadProvider.PimaxNative && profile.Runtime == RuntimeKind.VirtualDesktop)
+            profile = profile with { QuadViews = QuadProvider.None };
         if (profile.QuadViews == QuadProvider.PimaxNative && (profile.Runtime == RuntimeKind.SboysSteamVr || profile.UsesCheeky))
             profile = profile with { QuadViews = QuadProvider.QuadViewsFoveated };
         return profile with { QuadFocusAdapter = profile.UsesCheeky && profile.QuadViews == QuadProvider.QuadViewsFoveated };
@@ -78,6 +82,15 @@ public static class ProfileValidation
             issues.Add(new("pimax-native-replaced", IssueSeverity.Info, "Bundled Quad Views replaces the Pimax runtime's own Quad Views for DCS; keep Quad Views on in Pimax Play (the tested setup)." + (PimaxFovea.UsesPimaxPlay(profile)
                 ? "" : " Its focus area comes from this profile; Pimax Play's Quad View settings do not apply.")));
         if (!Enum.IsDefined(profile.FoveaSource)) Error("fovea-source", "Select Pimax Play or this profile as the focus area source.");
+        if (!Enum.IsDefined(profile.OverlayPosition)) Error("overlay-position", "Select a corner for the FPS counter.");
+        if (profile.Runtime == RuntimeKind.VirtualDesktop)
+        {
+            if (profile.QuadViews == QuadProvider.QuadViewsFoveated)
+                issues.Add(new("quest-fixed-focus", IssueSeverity.Info, "Quest 3 has no eye tracking: Quad Views keeps its sharp focus area fixed in the centre of the view. Keep it wide enough for the instruments you look at."));
+            // Virtual Desktop sets the refresh rate in its app on the headset; the frame limit follows the rate set here.
+            if (profile.HeadsetRefreshHz is not (72 or 80 or 90 or 120))
+                issues.Add(new("quest-refresh", IssueSeverity.Warning, "Quest 3 runs at 72, 80, 90 or 120 Hz. Set the rate Virtual Desktop uses (its app on the headset, Settings → Streaming → Frame rate)."));
+        }
         if (profile.CpuBoost || profile.FreeVram)
         {
             // Names are process names without ".exe". Moving or closing a process that starts DCS (or DCS itself) would
@@ -203,6 +216,8 @@ public static class ProfileValidation
             if (inventory.OptionsPath is null) Error("options-not-found", @"DCS's settings file (Saved Games\DCS\Config\options.lua) was not found." + " If DCS was never started on this PC, start it once to the main menu and close it, then press Rescan this PC; otherwise select the options.lua DCS uses.");
             if (profile.Runtime == RuntimeKind.SboysSteamVr && !profile.Desktop && inventory.SteamVrRuntime is null && profile.RuntimeManifestPath is null)
                 Error("steamvr-not-found", "SteamVR OpenXR manifest not found.");
+            if (profile.Runtime == RuntimeKind.VirtualDesktop && !profile.Desktop && inventory.VirtualDesktopRuntime is null && profile.RuntimeManifestPath is null)
+                Error("vdxr-not-found", @"Virtual Desktop's OpenXR runtime (VDXR) was not found. Install or update the Virtual Desktop Streamer; it brings OpenXR\virtualdesktop-openxr.json.");
         }
         return issues;
     }

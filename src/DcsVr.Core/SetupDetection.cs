@@ -43,7 +43,7 @@ public sealed record DetectionSources
 }
 
 /// <summary>
-/// Proposes a profile from what is running and configured on this PC: the headset route (Sboys/SteamVR or Pimax),
+/// Proposes a profile from what is running and configured on this PC: the headset route (Sboys/SteamVR, Pimax or Quest 3 through Virtual Desktop),
 /// tracking, eye tracking, refresh rate, Pimax Play Quad View values and a valid DLSS-NR runtime.
 /// </summary>
 public static class SetupDetection
@@ -51,22 +51,29 @@ public static class SetupDetection
     public static ActiveRouteState DetectActiveRoute(DetectionSources? sources = null)
     {
         sources ??= new();
+        // The Virtual Desktop Streamer serves the Quest 3 through its own OpenXR runtime (VDXR), which DCS uses directly,
+        // also while SteamVR runs for other games.
+        var virtualDesktop = sources.ProcessRunning("VirtualDesktop.Streamer");
+        const string VirtualDesktopSummary = "Virtual Desktop's Streamer is running; DCS uses its OpenXR runtime (VDXR) for the Quest 3.";
         // Only SteamVR's own log is positive evidence. Pimax Play (pi_server) also runs underneath Sboys, so it
         // never proves the Pimax route on its own.
         if (sources.ProcessRunning("vrserver"))
         {
             if (LastActiveHmd(sources.SteamVrServerLog) is not { } hmd)
-                return new(null, "SteamVR is running, but its log does not name the active headset driver.", TrackingKind.Unknown);
+                return virtualDesktop ? new(RuntimeKind.VirtualDesktop, VirtualDesktopSummary, TrackingKind.Unknown)
+                    : new(null, "SteamVR is running, but its log does not name the active headset driver.", TrackingKind.Unknown);
             var tracking = hmd.Contains("Slam", StringComparison.OrdinalIgnoreCase) ? TrackingKind.Slam : TrackingKind.Unknown;
             if (hmd.StartsWith("CustomHeadsetOpenVR.", StringComparison.OrdinalIgnoreCase))
                 return new(RuntimeKind.SboysSteamVr, "SteamVR is running the headset through Sboys (" + hmd + ").", tracking);
             if (hmd.StartsWith("aapvr.", StringComparison.OrdinalIgnoreCase) || hmd.StartsWith("pimax", StringComparison.OrdinalIgnoreCase))
                 return new(null, "SteamVR is running the headset through Pimax's SteamVR driver (" + hmd + ").", tracking);
+            if (virtualDesktop) return new(RuntimeKind.VirtualDesktop, VirtualDesktopSummary, TrackingKind.Unknown);
             return new(null, "SteamVR is running a headset through " + hmd.Split('.')[0] + ".", tracking);
         }
+        if (virtualDesktop) return new(RuntimeKind.VirtualDesktop, VirtualDesktopSummary, TrackingKind.Unknown);
         if (sources.ProcessRunning("pi_server"))
             return new(null, "Pimax Play is running and SteamVR is not. Use the Pimax route, or start SteamVR first for Sboys.", TrackingKind.Unknown);
-        return new(null, "No running headset software was detected. Start Pimax Play, or SteamVR with Sboys, then detect again.", TrackingKind.Unknown);
+        return new(null, "No running headset software was detected. Start Pimax Play, SteamVR with Sboys, or the Virtual Desktop Streamer, then detect again.", TrackingKind.Unknown);
     }
 
     public static SetupDetectionResult Detect(VrProfile current, InventorySnapshot inventory, DetectionSources? sources = null)
@@ -83,12 +90,18 @@ public static class SetupDetection
             // A running Pimax or SteamVR route is what this PC flies with: it replaces Optimizations only, whose VR settings
             // were kept in the profile and come back with it.
             profile = profile with { Desktop = false, Runtime = route, RuntimeManifestPath = route == profile.Runtime ? profile.RuntimeManifestPath : null };
-            Set("runtime", "How you fly", (route == RuntimeKind.SboysSteamVr ? "Sboys · SteamVR OpenXR" : "Pimax OpenXR") + (current.Desktop ? " (instead of Optimizations only)" : ""), active.Summary);
+            Set("runtime", "How you fly", Routes.Label(route) + (current.Desktop ? " (instead of Optimizations only)" : ""), active.Summary);
         }
         else
         {
             notes.Add(active.Summary);
-            if (current.Desktop) notes.Add("Optimizations only stays selected: no Pimax or SteamVR runtime is running.");
+            if (current.Desktop) notes.Add("Optimizations only stays selected: no Pimax, SteamVR or Virtual Desktop runtime is running.");
+        }
+        if (profile.Runtime == RuntimeKind.VirtualDesktop && !profile.Desktop)
+        {
+            // Quest 3: no eye tracking, no Pimax Play focus values, and Pimax's own Quad Views does not exist there.
+            profile = ProfileValidation.ResolveFeatures(profile with { Gaze = GazeMode.Fixed, FoveaSource = FoveaSource.Profile });
+            notes.Add("Virtual Desktop sets the Quest 3's frame rate in its app on the headset, which the PC cannot read: set the same rate on the Framegen page (72, 80, 90 or 120 Hz), and set SSW to Disabled there.");
         }
 
         var tracking = active.Tracking != TrackingKind.Unknown ? active.Tracking : inventory.Tracking;
@@ -132,7 +145,7 @@ public static class SetupDetection
             Set("headsetRefreshHz", "Headset refresh rate", refresh.ToString("0.#", CultureInfo.InvariantCulture) + " Hz", "SteamVR preferred refresh rate (confirm it matches the headset)");
         }
 
-        if (profile.QuadViews == QuadProvider.QuadViewsFoveated && string.IsNullOrWhiteSpace(profile.QuadViewsLayerDirectory) && PimaxFovea.Read(sources.PimaxPlaySettings) is { } quad)
+        if (profile.QuadViews == QuadProvider.QuadViewsFoveated && string.IsNullOrWhiteSpace(profile.QuadViewsLayerDirectory) && profile.Runtime != RuntimeKind.VirtualDesktop && PimaxFovea.Read(sources.PimaxPlaySettings) is { } quad)
         {
             // The focus area follows Pimax Play (read again at every launch); the converted values are also stored so
             // the profile keeps them if the source is later switched to "This profile".
@@ -153,7 +166,8 @@ public static class SetupDetection
                 notes.Add("Pimax's focus region assumes eye tracking. With a fixed focus, about Horizontal FOV 45% and Vertical FOV 55% (Pimax Quick units, a focus of 0.55 × 0.45 of the view) keeps instruments sharp.");
         }
 
-        if (ControlService.UsesSavedRuntime(profile))
+        // Never on the Quest 3 route, which has no DLSS 5.
+        if (ControlService.UsesSavedRuntime(profile) && profile.Runtime != RuntimeKind.VirtualDesktop)
         {
             // The app's saved copy is used by a profile without a runtime file of its own; a found file is saved as that copy.
             var saved = sources.SavedRuntimes?.Current();
