@@ -500,6 +500,46 @@ Test("Last flight: dcs.log session, Pimax frames, OFXR modes and frame time, DLS
         "seq=429 ms=112503.069 tid=26532 phase=I op=submission_timing result=1 dur_us=0 a=196610 b=131072 c=19036828363629029"])!;
     Require(ofxr.Share is { Seconds2x: 2, Seconds3x: 2, Switches: 2, Adaptive: true } && ofxr.Times is { P50Ms: 27.4, P90Ms: 28.2, Seconds: 3 });
     Require(LastFlight.ParseOfxr(["seq=1 ms=0.000 tid=27164 phase=I op=logger result=401 dur_us=0 a=128 b=0 c=24208"]) is null);
+    // OFXR per DCS frame: a loading screen (2 FPS) is left out; 60 s of flight at 30 FPS with 3 frames each to the
+    // headset, two missed frame slots in a row (one stutter), 15 ms spare per frame for 35 s and 5 ms after, generated pairs' GPU time and VRAM.
+    static List<string> Frames(int firstSeq)
+    {
+        var lines = new List<string> { $"seq={firstSeq} ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242" };
+        for (var i = 0; i < 6; i++) lines.Add(FormattableString.Invariant($"seq=2 ms={1000 + i * 500}.000 tid=1 phase=E op=app_wait_frame result=0 dur_us=400000 a=1 b=33333333 c=1"));
+        for (var i = 0; i < 1800; i++)
+        {
+            var ms = 10000 + i * 100.0 / 3;
+            if (i is 899 or 900) continue;
+            lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=B op=app_wait_frame result=0 dur_us=0 a=1 b=0 c=0"));
+            lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us={(ms < 45000 ? 15000 : 5000)} a=1 b=33333333 c=1"));
+            lines.Add(FormattableString.Invariant($"seq=4 ms={ms + 20:F3} tid=1 phase=E op=app_end_frame result=0 dur_us=12000 a=1 b=1 c=1"));
+            for (var k = 0; k < 3; k++) lines.Add(FormattableString.Invariant($"seq=5 ms={ms + k * 11.1:F3} tid=2 phase=E op=internal_end_frame result=0 dur_us=50 a=1 b=1 c=1"));
+            lines.Add(FormattableString.Invariant($"seq=6 ms={ms + 25:F3} tid=1 phase=I op=nvidia_gpu_total result=0 dur_us={(i % 2 == 0 ? 1500 : 1700)} a=100 b=1500 c=1"));
+        }
+        lines.Add(FormattableString.Invariant($"seq=7 ms=50000.000 tid=1 phase=I op=vram_status result=1 dur_us=0 a={(22320UL << 32) | 21161} b={(24138UL << 32) | 23000} c=1"));
+        lines.Add(FormattableString.Invariant($"seq=8 ms=51000.000 tid=1 phase=I op=vram_status result=1 dur_us=0 a={(22320UL << 32) | 20000} b=0 c=1"));
+        lines.Add("seq=9 ms=bad tid=1 phase=E op=app_wait_frame result=0 dur_us=99 a=1 b=1 c=1");
+        return lines;
+    }
+    var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
+    var switched = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started from X", "19:00:01.000 stats: OFF boost=on", "19:00:45.000 hotkey: engine optimizations OFF"], ofxrStart.AddMinutes(-1), ofxrStart)!;
+    Require(switched.Count == 1 && switched.Stretches is [{ FromMs: 500, ToMs: 45000, Off: false }, { FromMs: 45000, Off: true }]);
+    var frameRun = LastFlight.ParseOfxr(Frames(1), switched)!;
+    Require(frameRun.Pacing is { Seconds: 60, Frames: 1798, RenderedFps: 30, TargetFps: 30, HeadsetFps: > 89.8 and < 90.1, IntervalP50Ms: 33.3, IntervalP99Ms: 33.3, Stutters: 1, OnTimeShare: .999,
+        WaitP50Ms: 15, WaitP90Ms: 15, EndFrameP50Ms: 12, Partial: false }, "per-frame figures over the flying seconds only");
+    Require(frameRun.Cost is { GpuPerPairMs: 1.5, VramPeakMiB: 21161, VramBudgetMiB: 22320, GpuMemoryMiB: 24138 });
+    Require(frameRun.Engine is { Switches: 1, OnSeconds: 35, OffSeconds: 23, OnFrameMs: 33.3, OffFrameMs: 33.3, OnWaitMs: 15, OffWaitMs: 5 }, "on and off stretches, 2 s after the switch left out");
+    Require(LastFlight.ParseOfxr(Frames(5))!.Pacing is { Partial: true } && LastFlight.ParseOfxr(Frames(1))!.Engine is null, "a wrapped log; no switch, no comparison");
+    var late = LastFlight.ParseOfxr(Frames(1), LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:01:05.000 hotkey: engine optimizations OFF"], ofxrStart, ofxrStart))!;
+    Require(late.Engine is { Switches: 1, OnFrameMs: null, OffFrameMs: null, OnWaitMs: null } e2 && e2.OffSeconds < 20, "too short a side is not compared");
+    Require(LastFlight.ParseOfxr(Frames(1).Take(7))?.Pacing is null, "a loading screen alone is not flight");
+    // The module's own suite and A/B benchmark switch the optimizations too: left out. Past midnight the day moves on.
+    var suite = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:00:20.000 ==== DcsQvCull test suite 2026-10-05 19:00 ====", "19:00:30.000 bench: start, 24 blocks x 5 s",
+        "19:00:35.000 bench: TSC 4200 MHz", "19:00:38.000 report written to report_20261005_190038.txt", "19:00:45.000 hotkey: engine optimizations OFF", "19:00:50.000 hotkey: engine optimizations ON"], ofxrStart, ofxrStart)!;
+    Require(suite.Count == 2 && suite.Stretches.Count == 4 && !suite.Stretches.Any(s => s.FromMs < 25000 && s.ToMs > 25000) && suite.Stretches[^1] is { FromMs: 50000, Off: false });
+    var midnight = new DateTime(2026, 10, 5, 23, 59, 50, DateTimeKind.Local);
+    Require(LastFlight.ParseEngineSwitches(["23:59:55.000 DcsQvCull loader started", "00:00:30.000 hotkey: engine optimizations OFF"], midnight, midnight)!.Stretches[^1].FromMs == 40000);
+    Require(LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:00:45.000 hotkey: engine optimizations back ON (ini changed)"], ofxrStart, ofxrStart) is null, "no switch by the pilot");
     // Cheeky: the runtime came up, the hotkey toggled it twice; a failure is reported as such.
     var nr = LastFlight.ParseCheeky(["19:41:40.836 [T31660] DLSS-NR runtime search path=E:\\DCS\\bin\\CheekyFoveatedDLSS\\nvngx_dlssnr.dll error=0", "19:41:40.836 [T31660] DLSS-NR 310.8 feature-18 runtime initialized"],
         ["19:42:56.971 DLSS-NR hotkey toggled enabled=no", "19:43:00.551 DLSS-NR hotkey toggled enabled=yes"]);

@@ -29,7 +29,19 @@ internal static class WebVerification
         File.WriteAllLines(Path.Combine(ofxr, $"ofxr-bridge-flight-{Local(start.AddSeconds(40), "yyyyMMdd-HHmmss")}-pid4242.log"),
             ["seq=1 ms=0.000 tid=27164 phase=I op=logger result=401 dur_us=0 a=128 b=0 c=4242", "seq=14 ms=51876.732 tid=31660 phase=I op=adaptive_switch result=5 dur_us=0 a=0 b=2 c=0",
              .. Enumerable.Range(0, 2200).Select(i => $"seq={100 + i} ms={60000 + i * 1000}.000 tid=31660 phase=I op=latency_status result={(i is >= 900 and < 1300 ? 13 : 12)} dur_us=0 a={(i is >= 900 and < 1300 ? 24800 + i % 7 * 300 : 15200 + i % 11 * 250)} b=90 c=11111"),
-             "seq=9000 ms=960000.000 tid=31660 phase=I op=adaptive_switch result=2 dur_us=0 a=2 b=3 c=24581", "seq=9400 ms=1360000.000 tid=31660 phase=I op=adaptive_switch result=1 dur_us=0 a=3 b=2 c=16752"]);
+             "seq=9000 ms=960000.000 tid=31660 phase=I op=adaptive_switch result=2 dur_us=0 a=2 b=3 c=24581", "seq=9400 ms=1360000.000 tid=31660 phase=I op=adaptive_switch result=1 dur_us=0 a=3 b=2 c=16752",
+             // Two minutes of DCS frames at 45 FPS in 2× (8 ms spare each with the engine optimizations on, 3 ms after the
+             // in-flight switch turned them off at 160 s), two missed slots in a row, the generated frames' GPU time and VRAM.
+             .. Enumerable.Range(0, 5400).Where(i => i is not (2000 or 2001)).SelectMany(i =>
+             {
+                 var ms = 100000 + i * 200.0 / 9;
+                 return new[] { FormattableString.Invariant($"seq={20000 + i} ms={ms:F3} tid=31660 phase=E op=app_wait_frame result=0 dur_us={(ms < 160000 ? 8000 : 3000)} a=1 b=22222222 c=1"),
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 12:F3} tid=31660 phase=E op=app_end_frame result=0 dur_us=4100 a=1 b=1 c=1"),
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 1:F3} tid=26532 phase=E op=internal_end_frame result=0 dur_us=60 a=1 b=1 c=1"),
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 12:F3} tid=26532 phase=E op=internal_end_frame result=0 dur_us=60 a=1 b=1 c=1"),
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 14:F3} tid=31660 phase=I op=nvidia_gpu_total result=0 dur_us={2100 + i % 5 * 40} a=300 b=2100 c=1") };
+             }),
+             FormattableString.Invariant($"seq=40000 ms=150000.000 tid=31660 phase=I op=vram_status result=1 dur_us=0 a={(29000UL << 32) | 17600} b={(32607UL << 32) | 19100} c=1")]);
         var boost = Path.Combine(Directory.CreateDirectory(Path.Combine(root, "boost")).FullName, "status.json");
         File.WriteAllText(boost, JsonData.Serialize(new { schemaVersion = 1, state = "restored", updatedAt = end.AddSeconds(5), dcsPid = 4242,
             changed = new[] { "DCS (PID 4242): priority AboveNormal", "DCS (PID 4242): affinity all CPUs 0xFFFF", "PimaxClient (PID 31476): Normal, affinity 0xFC03", "pi_server (PID 8736): High, affinity 0xFC03", "steamwebhelper (PID 32368): BelowNormal, affinity 0xC000" },
@@ -39,6 +51,11 @@ internal static class WebVerification
         var module = Directory.CreateDirectory(Path.Combine(savedGames, "Scripts", "DcsQvCull")).FullName;
         File.WriteAllLines(Path.Combine(module, "DcsQvCullPrefetch.log"), [Local(start.AddSeconds(4), "yyyy-MM-dd HH:mm:ss") + " prefetch fix started mode=skip window_ms=1000",
             .. Enumerable.Range(1, 250).Select(i => Local(start.AddSeconds(4 + i * 10), "yyyy-MM-dd HH:mm:ss") + $" calls/s={(i < 20 ? 0 : 150000 + i % 13 * 9000)} skipped={(i < 20 ? "0.0" : "99.4")}% pointers=1 imports=41 lookups=0 faults=0")]);
+        // The module's own log (time of day only): the pilot switched the optimizations off 160 s into OFXR's log.
+        var engineLog = Path.Combine(module, "DcsQvCull.log");
+        File.WriteAllLines(engineLog, [Local(start.AddSeconds(3), "HH:mm:ss.fff") + " DcsQvCull loader started from " + Path.Combine(module, "DcsQvCull.dll"),
+            Local(start.AddSeconds(40 + 160), "HH:mm:ss.fff") + " hotkey: engine optimizations OFF"]);
+        File.SetLastWriteTimeUtc(engineLog, end.AddSeconds(-30).UtcDateTime);
         var cheeky = Directory.CreateDirectory(Path.Combine(bin, "CheekyFoveatedDLSS")).FullName;
         var standalone = Path.Combine(cheeky, "CheekyFoveatedDLSS-Standalone.log"); var host = Path.Combine(cheeky, "CheekyFoveatedDLSS-Host.log");
         // Cheeky appends every session to the same logs, with the time of day only: an earlier session that failed and

@@ -311,11 +311,17 @@ After DCS exits, the **Overview** shows a summary read from the logs of that ses
 - **Headset** — average FPS delivered, share of time at the refresh rate, missed and discarded frames (Pimax runtime log).
 - **Framegen** — share of time at 2× and 3×, number of Auto switches.
 - **DCS frame time** — median and 90th percentile of DCS's CPU/GPU time per frame (with Auto 2×/3×).
+- **Frame rate** — frames DCS rendered per second, frames sent to the headset (on routes without the Pimax log, such as Quest 3), and the share of DCS frames that arrived on time for the rate frame generation paced it to.
+- **Frame pacing** — the median time between two DCS frames, its 95th and 99th percentiles, and the stutters: frames that took more than twice the median, so at least one frame slot was missed.
+- **Spare time** — how long DCS waited for its next frame slot (median and p90): time it had to spare. "None" means DCS used its whole frame budget and set the pace itself. Also the time spent handing each frame to frame generation.
+- **Frame generation GPU** — median GPU time to generate the frames between two DCS frames (NVIDIA optical flow).
+- **Video memory** — the most DCS used, against the budget Windows gave it (needs **VRAM counter** on the Framegen page).
+- **Engine switch in flight** — when you used the engine optimizations' in-flight switch: DCS's spare time and frame time with them on and off, each side measured from 2 s after the switch. Shown when both sides have at least 20 s. The scene can differ between the stretches, so fly the same thing in both, and switch more than once.
 - **DLSS 5** — whether it ran, runtime version, hotkey toggles.
 - **CPU Boost** — apps moved and restored, anything that needed administrator rights.
 - **Terrain prefetch fix** (Engine Optimizations) — share of prefetch calls skipped.
 
-Parts without a log are left out. VRAM is not logged; use the in-headset VRAM counter for that.
+Frame rate, pacing, spare time, GPU, video memory and the engine switch come from OFXR's log, so they need frame generation and **OFXR log** on (Framegen → In-headset diagnostics). Menus and loading screens are left out. OFXR's log starts again from empty when it reaches 256 MB (about half an hour); after a longer flight the card says how much of the end of the flight it measured. Parts without a log are left out.
 
 ## Checks
 
