@@ -1000,6 +1000,7 @@ Stats g_stats;
 std::atomic<int> g_dumpsLeft{0};
 double g_qpcToUs = 0;
 std::atomic<int64_t> g_firstQuadQpc{0};
+std::atomic<int64_t> g_firstFrameQpc{0};  // first VR frame, quad or stereo (benchmark auto start)
 
 }  // namespace
 void SetBenchVariant(bool on);
@@ -1152,6 +1153,42 @@ int Classify(uint32_t count, const uint8_t* infos, std::vector<ViewInfo>& views)
   return pairs;
 }
 
+// Stereo VR (no quad views): the frame's culling call holds the two eye views
+// side by side. Marks them role 1 (each eye's main view, no partner) so the
+// per-frame consumers (frame counter, A/B benchmark, motion and view profiles)
+// see a frame; nothing is patched. Both views must be wide (mean half angle
+// of at least 25 deg), of similar width (within 25%), look the same way
+// (within 35 deg; canted displays are about 20 deg apart) and be an eye
+// distance apart (30-120 mm), which a mirror or sensor camera is not. Of
+// several such pairs the closest in width wins. Returns false without a pair.
+bool MarkStereoEyes(std::vector<ViewInfo>& views) {
+  for (ViewInfo& v : views) {
+    v.role = 0;
+    v.partner = -1;
+  }
+  const double minHalf = 25.0 * 0.017453292519943295, minDot = std::cos(35.0 * 0.017453292519943295);
+  int bi = -1, bj = -1;
+  double best = 1e9;
+  for (size_t i = 0; i < views.size(); ++i)
+    for (size_t j = i + 1; j < views.size(); ++j) {
+      const Frustum& a = views[i].fr;
+      const Frustum& b = views[j].fr;
+      if (!a.valid || !b.valid || a.meanHalfAngle < minHalf || b.meanHalfAngle < minHalf) continue;
+      const double ratio = a.meanHalfAngle / b.meanHalfAngle;
+      if (ratio < 0.8 || ratio > 1.25 || Dot(a.centerDir, b.centerDir) < minDot) continue;
+      const double apart = Len(a.apex - b.apex);
+      if (apart < 0.03 || apart > 0.12) continue;
+      if (std::fabs(std::log(ratio)) < best) {
+        best = std::fabs(std::log(ratio));
+        bi = static_cast<int>(i);
+        bj = static_cast<int>(j);
+      }
+    }
+  if (bi < 0) return false;
+  views[bi].role = views[bj].role = 1;
+  return true;
+}
+
 // Quad-Views-Foveated blends the focus layer over the periphery with
 // alpha = max(0.5, s.x * s.y), s = smoothstep ramps of width `smoothing` in
 // focus texture coordinates. The focus is fully opaque only where both
@@ -1198,6 +1235,8 @@ double EffectiveKeep() {
 std::mutex g_gazeMutex;
 double g_prevGaze[2][4] = {};
 bool g_havePrevGaze[2] = {};
+// Frames with the VR views: quad (UpdateGazeAndCheckHold) or stereo (Prepare).
+// Every measurement and the benchmark count frames with it.
 std::atomic<uint64_t> g_quadFrame{0};
 std::atomic<uint64_t> g_holdUntil{0};
 std::atomic<uint64_t> g_saccades{0};
@@ -1230,12 +1269,29 @@ bool UpdateGazeAndCheckHold(const std::vector<ViewInfo>& views) {
 }
 
 // Swaps in replacement volumes. Returns the number of patched views.
+// *stereoOut: no quad pair, but the two eye views of a stereo frame (counted
+// as a frame, nothing patched).
 void Prepare(uint32_t count, uint8_t* infos, Patch* patches, size_t maxPatches, int* pairsOut,
-             int* patchedOut, std::vector<ViewInfo>& views) {
+             int* patchedOut, std::vector<ViewInfo>& views, bool* stereoOut = nullptr) {
   int pairs = Classify(count, infos, views);
   *pairsOut = pairs;
-  if (g_dumpsLeft.load() > 0 && views.size() >= 4) {
+  const bool stereo = pairs < 1 && views.size() >= 2 && MarkStereoEyes(views);
+  if (stereoOut) *stereoOut = stereo;
+  if (g_dumpsLeft.load() > 0 && (views.size() >= 4 || stereo)) {
     if (g_dumpsLeft.fetch_sub(1) > 0) DumpViews(count, infos, views);
+  }
+  if (stereo) ++g_quadFrame;
+  // Main views but neither layout, call after call: dump one such call once, so
+  // the log shows what a VR frame of this setup looks like (on a monitor, the
+  // single main view always ends up here).
+  static std::atomic<uint32_t> misses{0};
+  static std::atomic<bool> missDumped{false};
+  if (pairs >= 1 || stereo) {
+    misses.store(0, std::memory_order_relaxed);
+  } else if (!views.empty() && misses.fetch_add(1, std::memory_order_relaxed) + 1 == 600 &&
+             !missDumped.exchange(true)) {
+    Log("collect: 600 calls in a row with main views but no quad-view or stereo frame recognised; the last one:");
+    DumpViews(count, infos, views);
   }
   if (pairs < 1) return;
   bool hold = UpdateGazeAndCheckHold(views);
@@ -1347,9 +1403,9 @@ void ApplyThreadsMax(void* scene) {
 // Returns false if an exception was raised; `patched` always reflects the
 // slots that were swapped so they can be restored.
 bool SehPrepare(uint32_t count, uint8_t* infos, Patch* patches, size_t maxPatches, int* pairs,
-                int* patched, std::vector<ViewInfo>* views) {
+                int* patched, std::vector<ViewInfo>* views, bool* stereo = nullptr) {
   __try {
-    Prepare(count, infos, patches, maxPatches, pairs, patched, *views);
+    Prepare(count, infos, patches, maxPatches, pairs, patched, *views, stereo);
     if (g_shadowTight.load() && *pairs >= 1) PrepareShadows(count, infos, patches, maxPatches, patched);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1458,7 +1514,7 @@ void CensusDump(uint64_t quadFrames) {
   double f = static_cast<double>(quadFrames);
   uint64_t totalUs = 0;
   for (auto& kv : snap) totalUs += kv.second.us;
-  Log("census over %llu quad frames: collect total %.3f ms/frame",
+  Log("census over %llu frames: collect total %.3f ms/frame",
       static_cast<unsigned long long>(quadFrames), totalUs / 1000.0 / f);
   for (auto& kv : snap) {
     uint32_t count = static_cast<uint32_t>(kv.first >> 40);
@@ -1544,8 +1600,9 @@ void __fastcall HookCollect(void* self, uint32_t count, uint8_t* infos, uint8_t*
   Patch* patches = patchBuf.data();
   int pairs = 0;
   int patched = 0;
+  bool stereo = false;
   if (count >= 4 && count <= kMaxCollectInfos && infos && havePatchBuf) {
-    if (!SehPrepare(count, infos, patches, patchBuf.size(), &pairs, &patched, &views))
+    if (!SehPrepare(count, infos, patches, patchBuf.size(), &pairs, &patched, &views, &stereo))
       Log("ERROR: exception while preparing views; optimisation disabled");
   } else if (count > kMaxCollectInfos) {
     static std::atomic<bool> once{false};
@@ -1582,28 +1639,35 @@ void __fastcall HookCollect(void* self, uint32_t count, uint8_t* infos, uint8_t*
   uint64_t prevMax = g_stats.maxViews.load();
   while (count > prevMax && !g_stats.maxViews.compare_exchange_weak(prevMax, count)) {
   }
-  if (pairs >= 1 && outs) {
-    g_stats.quadCalls++;
-    g_stats.usQuad += us;
-    g_stats.patchedViews += patched;
+  // A VR frame: quad views, or stereo (the eye views are role 1, so their
+  // renderables count as "peripheral" and focus stays 0). The stats line's
+  // per-quad figures stay quad only.
+  if ((pairs >= 1 || stereo) && outs) {
     uint64_t pr = 0, fr = 0;
     for (const ViewInfo& v : views) {
       size_t c = VectorCount(outs + v.index * kVectorStride);
       if (v.role == 1) pr += c;
       if (v.role == 2) fr += c;
     }
-    g_stats.periphRenderables += pr;
-    g_stats.focusRenderables += fr;
     uint64_t sr = 0;
     for (uint32_t i = 0; i < count; ++i)
       if (*reinterpret_cast<const uint16_t*>(infos + i * kCollectionInfoStride + kCiShadingModel) == 14)
         sr += VectorCount(outs + i * kVectorStride);
-    g_shadowStats.shadowRend += sr;
+    if (pairs >= 1) {
+      g_stats.quadCalls++;
+      g_stats.usQuad += us;
+      g_stats.patchedViews += patched;
+      g_stats.periphRenderables += pr;
+      g_stats.focusRenderables += fr;
+      g_shadowStats.shadowRend += sr;
+      int64_t zero = 0;
+      g_firstQuadQpc.compare_exchange_strong(zero, t1.QuadPart);
+    }
     g_frameShadowRend = sr;
     motion::OnFrame(views, t1.QuadPart, us, pr, fr, sr);
     vprof::OnFrame(t1.QuadPart, us, pr, fr, sr);
     int64_t zero = 0;
-    g_firstQuadQpc.compare_exchange_strong(zero, t1.QuadPart);
+    g_firstFrameQpc.compare_exchange_strong(zero, t1.QuadPart);
     BenchOnFrame(t1.QuadPart, pr, fr, us);
   }
 }
@@ -2411,7 +2475,7 @@ void MeasureRenderables(int ms, double* periph, double* focus, uint64_t* frames)
 // Checks that exclusion volumes actually remove objects: with DebugHole the
 // focus views exclude their own full frustum, so every object Scene.dll can
 // exclude disappears from them.
-// Frame time distribution over `ms` milliseconds (quad-view frames).
+// Frame time distribution over `ms` milliseconds (VR frames: quad or stereo).
 void FrameTimes(int ms) {
   {
     std::lock_guard<std::mutex> lock(g_bench.mutex);
@@ -3492,10 +3556,10 @@ DWORD WINAPI WorkerThread(void*) {
       if (t) CloseHandle(t);
     }
     f12 = k12;
-    if (!autoStarted && g_cfg.benchAutoStartSec > 0 && g_firstQuadQpc.load()) {
+    if (!autoStarted && g_cfg.benchAutoStartSec > 0 && g_firstFrameQpc.load()) {
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
-      if ((now.QuadPart - g_firstQuadQpc.load()) * g_qpcToUs / 1e6 > g_cfg.benchAutoStartSec) {
+      if ((now.QuadPart - g_firstFrameQpc.load()) * g_qpcToUs / 1e6 > g_cfg.benchAutoStartSec) {
         autoStarted = true;
         Log("bench: auto start");
         StartBench();

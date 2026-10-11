@@ -166,7 +166,7 @@ void StopAndReport() {
   g_hookMeasure = false;
   ApplyTextureHook();
   std::lock_guard<std::mutex> lock(g_mutex);
-  Log("-- motion profile (per quad frame, by head angular speed) --");
+  Log("-- motion profile (per VR frame, by head angular speed) --");
   Log("  %-24s %6s %8s %8s %8s %8s %8s %8s %8s %8s %9s %9s %8s", "bucket", "frames", "frame", "p95", "culling",
       "passes", "rt cpu", "periph", "focus", "shadow", "tex req", "tex orig", "allocKB");
   for (int k = 0; k < kBuckets; ++k) {
@@ -196,7 +196,7 @@ void StopAndReport() {
     }
     Log("  %-24s per frame:%s", kBucketNames[k], line.c_str());
   }
-  Log("  (frame = interval between quad frames; passes = render-graph pass CPU on the render thread; "
+  Log("  (frame = interval between VR frames; passes = render-graph pass CPU on the render thread; "
       "rt cpu = render-thread CPU per frame; tex orig = streaming requests that reached dx11backend)");
 }
 

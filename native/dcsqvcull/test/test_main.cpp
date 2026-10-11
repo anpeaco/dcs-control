@@ -446,6 +446,44 @@ int main() {
   for (int i = 0; i < patched; ++i) *reinterpret_cast<uint8_t**>(patches[i].slot) = patches[i].original;
   Check(*reinterpret_cast<uint8_t**>(infos + kCiClipVolume) == vols[0], "restore");
 
+  // Stereo (no quad views): the two eye views, a cascade and a narrow sensor
+  // camera are one frame, nothing patched; one eye alone, or two wide views a
+  // mirror's distance apart, are not.
+  {
+    alignas(64) static uint8_t svols[4][0x700];
+    MakeFrustum(svols[0], eye, fwd, up, -1.2, 1.0, -1.1, 1.0, 0.05, 20000);
+    MakeFrustum(svols[1], eyeR, fwd, up, -1.0, 1.2, -1.1, 1.0, 0.05, 20000);
+    MakeFrustum(svols[2], eye + Vec3{0.3, -0.2, 0.5}, fwd, up, -0.1, 0.1, -0.1, 0.1, 0.05, 20000);
+    MakeFrustum(svols[3], eye + Vec3{0.6, 0, 0}, fwd, up, -1.0, 1.2, -1.1, 1.0, 0.05, 20000);
+    static uint8_t sinfo[5 * kCollectionInfoStride];
+    auto fill = [&](std::initializer_list<int> vs) {
+      memset(sinfo, 0, sizeof(sinfo));
+      int i = 0;
+      for (int v : vs) *reinterpret_cast<uint8_t**>(sinfo + i++ * kCollectionInfoStride + kCiClipVolume) = svols[v];
+      *reinterpret_cast<uint16_t*>(sinfo + i * kCollectionInfoStride + kCiShadingModel) = 14;  // a cascade
+      *reinterpret_cast<uint8_t**>(sinfo + i * kCollectionInfoStride + kCiClipVolume) = vols[0];
+      return static_cast<uint32_t>(i + 1);
+    };
+    bool stereo = false;
+    uint64_t f0 = g_quadFrame.load();
+    uint32_t n = fill({0, 1, 2});
+    pairs = patched = 0;  // the caller starts each call from 0 (Prepare only adds)
+    Prepare(n, sinfo, patches, 16, &pairs, &patched, views, &stereo);
+    Check(pairs == 0 && stereo && patched == 0 && g_quadFrame.load() == f0 + 1,
+          "stereo: two eye views a frame apart from the sensor view, counted once, nothing patched");
+    Check(views.size() == 3 && views[0].role == 1 && views[1].role == 1 && views[2].role == 0,
+          "stereo: the eye views are the main views, the narrow camera is not");
+    n = fill({0, 2, 2});
+    Prepare(n, sinfo, patches, 16, &pairs, &patched, views, &stereo);
+    Check(!stereo && g_quadFrame.load() == f0 + 1, "stereo: one wide view is not a VR frame");
+    n = fill({0, 3, 2});
+    Prepare(n, sinfo, patches, 16, &pairs, &patched, views, &stereo);
+    Check(!stereo && g_quadFrame.load() == f0 + 1, "stereo: two wide views 60 cm apart are not a VR frame");
+    Prepare(5, infos, patches, 16, &pairs, &patched, views, &stereo);
+    for (int i = 0; i < patched; ++i) *reinterpret_cast<uint8_t**>(patches[i].slot) = patches[i].original;
+    Check(pairs == 2 && !stereo, "stereo: a quad-view call stays quad");
+  }
+
   // Frame heap slabs: a fake TFrameMemoryHeap<1> with the original's bump
   // semantics (aligned size, xadd on +0x18, null past +0x10).
   {
