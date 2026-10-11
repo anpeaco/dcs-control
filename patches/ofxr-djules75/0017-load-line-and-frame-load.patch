@@ -1,0 +1,421 @@
+diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
+--- a/include/xrfg/bridge_flight_logger.hpp
++++ b/include/xrfg/bridge_flight_logger.hpp
+@@ -304,6 +304,17 @@ enum class BridgeFlightOperation : std::uint32_t {
+     // (32-63), 0 where not known; c= 1 while the application owns the
+     // foreground window (Windows budgets a background process lower).
+     vram_status,
++    // DCS Control (0017). Once per application frame, whether or not
++    // adaptive control runs, at its xrEndFrame: a= its CPU time in
++    // microseconds (the interval since the previous frame less the layer's
++    // holds that delayed it, as adaptive control judges it); b= its GPU time
++    // in microseconds (the scheduler's busy time for this process per
++    // application frame, the layer's own synthesis included), valid when
++    // result=1; c= the interval in microseconds (bits 0-31), this process's
++    // GPU load (32-47) and the whole GPU's (48-63) in permille, 0 when not
++    // known. Intervals over a second (loading, a paused session) are left
++    // out.
++    frame_load,
+ };
+ 
+ struct BridgeFlightToken {
+diff --git a/include/xrfg/diagnostic_overlay_model.hpp b/include/xrfg/diagnostic_overlay_model.hpp
+--- a/include/xrfg/diagnostic_overlay_model.hpp
++++ b/include/xrfg/diagnostic_overlay_model.hpp
+@@ -7,6 +7,7 @@
+ // and this layer's own frame-generation state with application vs output rate.
+ 
+ #include "xrfg/fps_overlay_model.hpp"
++#include <array>
+ #include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+@@ -114,6 +115,33 @@ struct VramStatus {
+     std::uint64_t adapter_total{}; // the adapter's dedicated memory; 0 unknown
+ };
+ 
++// DCS Control (0017): the application's CPU and GPU time per frame against
++// its frame slot, for the panel's load line. The layer measures every frame
++// (frame_load in the flight log) and summarises a second at a time on the
++// xrEndFrame thread (LoadWindow).
++struct LoadStatus {
++    bool known{};
++    float cpu_ms{};       // the second's 90th percentile of the CPU time per frame
++    float gpu_ms{-1.0f};  // the second's mean GPU busy time per frame; negative when not known
++    float slot_ms{};      // the display period the application is given (its frame slot); 0 when not known
++};
++
++// One second of application frames: add() per frame, in nanoseconds (gpu
++// negative when not known); take() hands over the summary once the window
++// spans a second, and the next window starts there.
++class LoadWindow {
++public:
++    void add(std::int64_t at, std::int64_t cpu, std::int64_t gpu) noexcept;
++    [[nodiscard]] bool take(std::int64_t at, std::int64_t slot, LoadStatus& out) noexcept;
++    void reset() noexcept { *this = LoadWindow{}; }
++private:
++    std::array<std::int64_t, 512> cpu_{};
++    std::size_t count_{};
++    std::int64_t gpu_sum_{};
++    std::size_t gpu_count_{};
++    std::int64_t start_{-1};
++};
++
+ enum class DiagnosticColor : std::uint8_t { white, green, amber, grey, red };
+ struct DiagnosticLine {
+     std::string text;
+@@ -166,6 +194,8 @@ struct DiagnosticInputs {
+     // DCS Control (0015): the pupil shift layer and its in-flight switch.
+     PupilStatus pupil;
+     DiagnosticHotkey pupil_hotkey;
++    // DCS Control (0017): the load line, left out while not known.
++    LoadStatus load;
+ };
+ 
+ [[nodiscard]] std::string format_dlss_line(const DiagnosticInputs& inputs, DiagnosticColor& color);
+@@ -189,10 +219,18 @@ struct DiagnosticInputs {
+ // of the budget, for this process), red past the budget: the driver starts
+ // moving this process's memory out to system RAM there.
+ [[nodiscard]] std::string format_vram_line(const VramStatus& vram, DiagnosticColor& color);
++// DCS Control (0017): "CPU 18.5  GPU 15.2  of 27.8 ms" - DCS's CPU and GPU
++// time per frame against its frame slot. Green while both fit in 85% of the
++// slot; amber from there and red past the slot (frames missed), with
++// "  GPU-bound" when the GPU's time is what reaches 85% and "  CPU-bound"
++// otherwise. "GPU --" when the GPU's time is not known; without a slot the two
++// times alone, white.
++[[nodiscard]] std::string format_load_line(const LoadStatus& load, DiagnosticColor& color);
+ [[nodiscard]] std::vector<DiagnosticLine> format_diagnostic_lines(const DiagnosticInputs& inputs);
+ 
+ inline constexpr std::uint32_t kDiagnosticPanelWidth = 768;
+-inline constexpr std::uint32_t kDiagnosticPanelHeight = 176;
++// DCS Control (0017): one line taller for the load line (nine lines).
++inline constexpr std::uint32_t kDiagnosticPanelHeight = 196;
+ // Characters per line at the panel's fixed glyph scale; longer lines are cut.
+ [[nodiscard]] std::size_t diagnostic_panel_columns(std::uint32_t width) noexcept;
+ // Premultiplied RGBA (or BGRA) with a translucent dark background.
+diff --git a/include/xrfg/openxr_fps_overlay.hpp b/include/xrfg/openxr_fps_overlay.hpp
+--- a/include/xrfg/openxr_fps_overlay.hpp
++++ b/include/xrfg/openxr_fps_overlay.hpp
+@@ -30,6 +30,8 @@ public:
+     // DCS VR Control (0007): `[ofxr] diag_vram` - the panel's VRAM line, as
+     // last sampled off the render path. `show` false leaves the line out.
+     void set_vram_status(const VramStatus& status, bool show) noexcept;
++    // DCS Control (0017): the panel's load line, the latest second's summary.
++    void set_load_status(const LoadStatus& status) noexcept;
+     // Whether the diagnostic panel is currently toggled on (session only).
+     [[nodiscard]] bool diagnostic_visible() const noexcept;
+     // Called on the application's end-frame thread, not the presenter thread.
+diff --git a/src/core/diagnostic_overlay_model.cpp b/src/core/diagnostic_overlay_model.cpp
+--- a/src/core/diagnostic_overlay_model.cpp
++++ b/src/core/diagnostic_overlay_model.cpp
+@@ -147,6 +147,43 @@ std::string format_vram_line(const VramStatus& vram, DiagnosticColor& color) {
+     return text;
+ }
+ 
++void LoadWindow::add(std::int64_t at, std::int64_t cpu, std::int64_t gpu) noexcept {
++    if (start_ < 0) start_ = at;
++    if (count_ < cpu_.size()) cpu_[count_++] = std::max<std::int64_t>(0, cpu);
++    if (gpu >= 0) { gpu_sum_ += gpu; ++gpu_count_; }
++}
++
++bool LoadWindow::take(std::int64_t at, std::int64_t slot, LoadStatus& out) noexcept {
++    constexpr std::int64_t kSecondNs = 1'000'000'000;
++    if (start_ < 0 || count_ == 0 || at - start_ < kSecondNs) return false;
++    // The 90th percentile as the app's Last flight page takes it: the
++    // ceil(0.9 n)-th smallest.
++    const std::size_t k = (count_ * 9 + 9) / 10 - 1;
++    std::nth_element(cpu_.begin(), cpu_.begin() + static_cast<std::ptrdiff_t>(k),
++        cpu_.begin() + static_cast<std::ptrdiff_t>(count_));
++    out.known = true;
++    out.cpu_ms = static_cast<float>(static_cast<double>(cpu_[k]) / 1e6);
++    out.gpu_ms = gpu_count_ ? static_cast<float>(static_cast<double>(gpu_sum_) / static_cast<double>(gpu_count_) / 1e6) : -1.0f;
++    out.slot_ms = slot > 0 ? static_cast<float>(static_cast<double>(slot) / 1e6) : 0.0f;
++    reset();
++    start_ = at;
++    return true;
++}
++
++std::string format_load_line(const LoadStatus& load, DiagnosticColor& color) {
++    const bool gpu_known = load.gpu_ms >= 0.0f;
++    std::string text = "CPU " + fixed(load.cpu_ms, 1) + "  GPU " + (gpu_known ? fixed(load.gpu_ms, 1) : std::string("--"));
++    if (load.slot_ms <= 0.0f) { color = DiagnosticColor::white; return text + " ms"; }
++    text += "  of " + fixed(load.slot_ms, 1) + " ms";
++    const float limit = 0.85f * load.slot_ms;
++    const float worst = std::max(load.cpu_ms, gpu_known ? load.gpu_ms : 0.0f);
++    if (worst < limit) { color = DiagnosticColor::green; return text; }
++    color = worst > load.slot_ms ? DiagnosticColor::red : DiagnosticColor::amber;
++    // The GPU's busy time is measured directly; the CPU time also grows when
++    // the driver holds DCS for the GPU, so the GPU decides first.
++    return text + (gpu_known && load.gpu_ms >= limit ? "  GPU-bound" : "  CPU-bound");
++}
++
+ std::string format_engine_line(const DiagnosticInputs& in, DiagnosticColor& color) {
+     const auto& e = in.engine;
+     if (!e.known) return {};
+@@ -209,6 +246,11 @@ std::vector<DiagnosticLine> format_diagnostic_lines(const DiagnosticInputs& in)
+     if (!pupil.text.empty()) lines.push_back(std::move(pupil));
+     lines.push_back({"App " + whole(in.app_fps) + " fps -> out " + whole(in.output_fps) + " fps",
+         DiagnosticColor::white});
++    if (in.load.known) { // 0017
++        DiagnosticLine load;
++        load.text = format_load_line(in.load, load.color);
++        lines.push_back(std::move(load));
++    }
+     if (in.show_vram) { // 0007
+         DiagnosticLine vram;
+         vram.text = format_vram_line(in.vram, vram.color);
+diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
+--- a/src/layer/bridge_flight_logger.cpp
++++ b/src/layer/bridge_flight_logger.cpp
+@@ -114,6 +114,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+         return "smooth_cursor";
+     case BridgeFlightOperation::vram_status: // DCS VR Control (0011)
+         return "vram_status";
++    case BridgeFlightOperation::frame_load: // DCS Control (0017)
++        return "frame_load";
+     case BridgeFlightOperation::synthesis_frame_start_wait:
+         return "synthesis_frame_start_wait";
+     case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
+diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
+--- a/src/layer/openxr_fps_overlay.cpp
++++ b/src/layer/openxr_fps_overlay.cpp
+@@ -109,6 +109,8 @@ struct OpenXrFpsOverlay::Impl {
+     // DCS VR Control (0007).
+     VramStatus vram;
+     bool show_vram{};
++    // DCS Control (0017).
++    LoadStatus load_status;
+     OverlayPlacement panel_placement{};
+     HANDLE status_mapping{};
+     const DcsVrStatusV1* status_view{};
+@@ -490,6 +492,7 @@ struct OpenXrFpsOverlay::Impl {
+             inputs.hotkey = hotkey;
+             inputs.show_vram = show_vram;
+             inputs.vram = vram;
++            inputs.load = load_status;
+             read_status(inputs);
+             read_engine(inputs);
+             read_pupil(inputs);
+@@ -529,6 +532,10 @@ void OpenXrFpsOverlay::set_vram_status(const VramStatus& status, bool show) noex
+     impl_->vram = status;
+     impl_->show_vram = show;
+ }
++void OpenXrFpsOverlay::set_load_status(const LoadStatus& status) noexcept {
++    std::scoped_lock lock(impl_->mutex);
++    impl_->load_status = status;
++}
+ bool OpenXrFpsOverlay::diagnostic_visible() const noexcept {
+     std::scoped_lock lock(impl_->mutex);
+     return impl_->toggle.visible();
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -1710,6 +1710,14 @@ struct SessionState {
+     // Application frames ended, read by the GPU statistics sampler.
+     std::atomic<std::uint64_t> application_frames_ended{0};
+     bool gpu_stats_tried{}; // the xrEndFrame thread
++    // DCS Control (0017): the display period the application was last given
++    // by xrWaitFrame (its frame slot), and the per-frame load figures
++    // (sample_application_load) - the xrEndFrame thread's own: the previous
++    // frame's entry, the second being collected and the last summary.
++    std::atomic<std::int64_t> application_period_ns{0};
++    std::int64_t load_last_entry_ns{};
++    xrfg::LoadWindow load_window;
++    xrfg::LoadStatus load_status;
+     // The skip itself (see xrfg::latency::LateFrameSkipController): while it
+     // is on, the application's xrEndFrame makes one synthetic per frame, at
+     // the second synthetic's instant, and the presenter re-presents the
+@@ -5971,6 +5979,8 @@ XrResult layer_wait_frame_impl(
+             frame_state->predictedDisplayTime,
+             frame_state->predictedDisplayPeriod,
+         });
++        state->application_period_ns.store(
++            frame_state->predictedDisplayPeriod); // DCS Control (0017)
+         constexpr std::size_t kMaximumPendingFrameRecords = 32;
+         while (state->pending_frames.size() > kMaximumPendingFrameRecords) {
+             state->pending_frames.pop_front();
+@@ -14002,9 +14012,10 @@ void create_application_gpu_timer(SessionState& state) noexcept {
+ // DCS VR Control (0007): the GPU statistics sampler (busy time for adaptive
+ // 2X/3X, memory for `[ofxr] diag_vram`), made on the xrEndFrame thread the
+ // first time either is wanted, on the adapter the session renders on.
++// DCS Control (0017): busy time is always wanted now (frame_load and the
++// panel's load line), so it is made at the first application frame.
+ void ensure_gpu_stats(SessionState& state) noexcept {
+-    const bool busy = state.adaptive_active.load();
+-    if (state.gpu_stats_tried || (!busy && !state.diag_vram)) {
++    if (state.gpu_stats_tried) {
+         return;
+     }
+     state.gpu_stats_tried = true;
+@@ -14093,6 +14104,61 @@ void log_vram_status(SessionState& state) noexcept {
+ //        application frame (xrfg::GpuStatsSampler), which leaves out the
+ //        idle the bracket above cannot see; the bracket where no fresh
+ //        reading exists.
++// DCS Control (0017): the application's CPU and GPU time for every frame,
++// whether or not adaptive control runs: one frame_load record in the flight
++// log, and a second at a time summarised for the panel's load line. CPU is
++// the figure adaptive control judges (the interval less the layer's holds on
++// every application thread that delayed the frame, the union taken as
++// below); GPU the scheduler's busy time for this process per application
++// frame (xrfg::GpuStatsSampler; the layer's own synthesis runs in the same
++// process and counts), not known (-1) without a reading from the last
++// second. One lock on the blocked-interval log and a snapshot read a frame.
++void sample_application_load(
++    SessionState& state, std::int64_t at, std::int64_t own_blocked) noexcept {
++    const std::int64_t from = std::exchange(state.load_last_entry_ns, at);
++    const std::int64_t interval = at - from;
++    if (from == 0 || interval <= 0 || interval > xrfg::latency::kSecond) {
++        return;
++    }
++    const std::int64_t begin_at = state.application_begin_entered_ns.load();
++    const std::int64_t other_until =
++        begin_at > from && begin_at <= at ? begin_at : from;
++    xrfg::latency::BlockedSplit split{};
++    try {
++        std::scoped_lock lock(g_blocked_mutex);
++        split = g_blocked_log.blocked(from, at, GetCurrentThreadId(), other_until);
++    } catch (...) {
++    }
++    const std::int64_t cpu =
++        std::max<std::int64_t>(0, interval - std::max(split.total, own_blocked));
++    std::int64_t gpu = -1;
++    std::uint64_t process_permille = 0;
++    std::uint64_t adapter_permille = 0;
++    if (state.gpu_stats) {
++        const auto busy = state.gpu_stats->snapshot().busy;
++        if (busy.valid && at - busy.at <= xrfg::latency::kSecond) {
++            gpu = busy.per_frame;
++            const auto permille = [](double load) {
++                return load > 0.0
++                    ? std::min<std::uint64_t>(static_cast<std::uint64_t>(load * 1000.0 + 0.5), 0xFFFFU)
++                    : 0U;
++            };
++            process_permille = permille(busy.process_load);
++            adapter_permille = permille(busy.adapter_load);
++        }
++    }
++    xrfg::bridge_flight_logger().event(
++        xrfg::BridgeFlightOperation::frame_load,
++        gpu >= 0 ? 1 : 0,
++        static_cast<std::uint64_t>(cpu / 1000),
++        gpu >= 0 ? static_cast<std::uint64_t>(gpu / 1000) : 0U,
++        std::min<std::uint64_t>(static_cast<std::uint64_t>(interval / 1000), 0xFFFFFFFFU) |
++            (process_permille << 32U) | (adapter_permille << 48U));
++    state.load_window.add(at, cpu, gpu);
++    static_cast<void>(state.load_window.take(
++        at, state.application_period_ns.load(), state.load_status));
++}
++
+ void sample_application_throughput(
+     SessionState& state, std::chrono::steady_clock::time_point entered) noexcept {
+     auto& throughput = state.throughput;
+@@ -14102,6 +14168,7 @@ void sample_application_throughput(
+     const std::int64_t blocked = std::exchange(t_application_blocked_ns, 0);
+     state.application_frames_ended.fetch_add(1, std::memory_order_relaxed);
+     ensure_gpu_stats(state);
++    sample_application_load(state, steady_nanoseconds(entered), blocked); // DCS Control (0017)
+     if (!state.adaptive_active.load()) {
+         throughput.last_entry = {};
+         return;
+@@ -14362,6 +14429,7 @@ XrResult layer_end_frame_impl(
+             state->fps_overlay->set_vram_status(
+                 state->gpu_stats->snapshot().vram, true);
+         }
++        state->fps_overlay->set_load_status(state->load_status); // DCS Control (0017)
+         state->fps_overlay->application_frame(end_info);
+     }
+ 
+diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
+--- a/tests/bridge_flight_logger_tests.cpp
++++ b/tests/bridge_flight_logger_tests.cpp
+@@ -249,6 +249,13 @@ int main(int argc, char** argv) {
+             17748ULL | (31419ULL << 32),
+             29000ULL | (32607ULL << 32),
+             0);
++        // DCS Control (0017): one application frame's CPU and GPU time.
++        enabled.event(
++            xrfg::BridgeFlightOperation::frame_load,
++            1,
++            18540,
++            15210,
++            27780ULL | (548ULL << 32) | (642ULL << 48));
+         enabled.shutdown();
+ 
+         const std::string log = read(log_path);
+@@ -320,6 +327,10 @@ int main(int argc, char** argv) {
+             log.find("op=vram_status result=1 dur_us=0 a=134943577490772 b=140045998649672 c=0") !=
+                 std::string::npos,
+             "bridge log is missing the 0011 video memory record");
++        require(
++            log.find("op=frame_load result=1 dur_us=0 a=18540 b=15210 c=" +
++                std::to_string(27780ULL | (548ULL << 32) | (642ULL << 48))) != std::string::npos,
++            "bridge log is missing the 0017 frame load record");
+         require(log.find("op=app_swapchain_acquire") == std::string::npos &&
+                     log.find("phase=B op=private_swapchain_wait") == std::string::npos &&
+                     log.find("phase=E op=private_swapchain_wait result=-1") != std::string::npos,
+diff --git a/tests/diagnostic_overlay_tests.cpp b/tests/diagnostic_overlay_tests.cpp
+--- a/tests/diagnostic_overlay_tests.cpp
++++ b/tests/diagnostic_overlay_tests.cpp
+@@ -243,6 +243,48 @@ int main() {
+             in.show_vram = false;
+             require(format_diagnostic_lines(in).size() == 5, "no VRAM line without diag_vram");
+         }
++        // DCS Control (0017): the load line - CPU and GPU time per frame
++        // against the slot, its colour, and which one limits.
++        {
++            const auto load_text = [](float cpu, float gpu, float slot, C expected) {
++                LoadStatus load{true, cpu, gpu, slot};
++                C color{};
++                auto text = format_load_line(load, color);
++                require(color == expected, "load line colour for: " + text);
++                return text;
++            };
++            require(load_text(18.54f, 15.2f, 27.78f, C::green) == "CPU 18.5  GPU 15.2  of 27.8 ms", "load line, headroom");
++            require(load_text(24.4f, 15.2f, 27.78f, C::amber) == "CPU 24.4  GPU 15.2  of 27.8 ms  CPU-bound", "load line, CPU near the slot");
++            require(load_text(26.0f, 25.0f, 27.78f, C::amber) == "CPU 26.0  GPU 25.0  of 27.8 ms  GPU-bound",
++                "the GPU's own time decides first");
++            require(load_text(31.0f, 12.0f, 27.78f, C::red) == "CPU 31.0  GPU 12.0  of 27.8 ms  CPU-bound", "load line past the slot");
++            require(load_text(18.5f, -1.0f, 27.78f, C::green) == "CPU 18.5  GPU --  of 27.8 ms", "GPU time not known");
++            require(load_text(18.5f, 15.2f, 0.0f, C::white) == "CPU 18.5  GPU 15.2 ms", "no slot");
++            // A second at a time: the 90th percentile of CPU, the mean of GPU.
++            LoadWindow window;
++            LoadStatus summary;
++            constexpr std::int64_t ms = 1'000'000;
++            for (int i = 0; i < 36; ++i)
++                window.add(static_cast<std::int64_t>(i) * 28 * ms, (i < 33 ? 18 : 30) * ms, i % 2 ? 14 * ms : -1);
++            require(!window.take(35 * 28 * ms, 28 * ms, summary) && !summary.known, "summary before a second");
++            require(window.take(36 * 28 * ms, 27'780'000, summary) && summary.known &&
++                    std::abs(summary.cpu_ms - 18.0f) < 0.01f && std::abs(summary.gpu_ms - 14.0f) < 0.01f &&
++                    std::abs(summary.slot_ms - 27.78f) < 0.01f,
++                "second summary: p90 is the 33rd of 36 frames, GPU the mean of the frames that had it");
++            window.add(36 * 28 * ms + 1, 20 * ms, -1);
++            require(!window.take(36 * 28 * ms + 2, 28 * ms, summary), "the next window starts at the take");
++            require(window.take(36 * 28 * ms + 1'000'000'000, 0, summary) && summary.gpu_ms < 0.0f &&
++                    summary.slot_ms == 0.0f && std::abs(summary.cpu_ms - 20.0f) < 0.01f,
++                "a window without GPU readings or a slot");
++            // On the panel after the rate line; left out while not known.
++            in = inputs();
++            require(format_diagnostic_lines(in).size() == 4, "no load line before the first second");
++            in.load = {true, 18.5f, 15.2f, 27.78f};
++            const auto with_load = format_diagnostic_lines(in);
++            require(with_load.size() == 5 && with_load[4].text == "CPU 18.5  GPU 15.2  of 27.8 ms" &&
++                    with_load[4].color == C::green && with_load[3].text.rfind("App ", 0) == 0,
++                "load line placed after the rate line");
++        }
+         // Every line the formatter can produce fits the panel.
+         in = inputs(); in.cheeky.nr_evaluations_per_second = 0;
+         std::memset(in.cheeky.reason, 'w', sizeof(in.cheeky.reason) - 1); in.cheeky.reason[sizeof(in.cheeky.reason) - 1] = 0;
+@@ -264,9 +306,12 @@ int main() {
+             in.vram = {true, 6ULL << 30, 7ULL << 30, 24ULL << 30, 32ULL << 30};
+             in.engine = {true, kEngineRunning | kEngineOn | (13ULL << 8)};
+             in.pupil = {true, kPupilRunning | kPupilOn | kPupilGaze | (32ULL << 8)};
++            in.load = {true, 24.4f, 15.2f, 27.78f}; // 0017
+             in.hotkey = {0x7B, 6}; // Alt+Shift+F12
+             const auto all = format_diagnostic_lines(in);
+-            require(all.size() == 8 && in.hotkey.virtual_key, "not every optional line present");
++            require(all.size() == 9 && in.hotkey.virtual_key, "not every optional line present");
++            for (const auto& line : all)
++                require(line.text.size() <= diagnostic_panel_columns(kDiagnosticPanelWidth), "line cut: " + line.text);
+             const auto pixels = rasterize_diagnostic_panel(kDiagnosticPanelWidth, kDiagnosticPanelHeight, all, false);
+             const unsigned last_top = 8 + static_cast<unsigned>(all.size() - 1) * 20;
+             bool last_inked = false;

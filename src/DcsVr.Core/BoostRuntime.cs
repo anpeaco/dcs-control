@@ -107,7 +107,7 @@ public sealed class BoostRuntime
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException)
         { error.WriteLine("Could not read the boost profile: " + e.Message); return 1; }
 
-        if (!profile.UsesBoostHelper) { output.WriteLine("CPU Boost, Free VRAM before flight and Lower the monitor are off in this profile; nothing to do."); return 0; }
+        if (!profile.UsesBoostHelper) { output.WriteLine("CPU Boost, Free VRAM before flight, Lower the monitor and Record CPU and GPU use are off in this profile; nothing to do."); return 0; }
 
         Mutex mutex;
         try { mutex = new Mutex(initiallyOwned: false, MutexName, out _); }
@@ -184,7 +184,7 @@ public sealed class BoostRuntime
 
         try
         {
-            Log($"Boost helper started (PID {Environment.ProcessId}). CPU Boost {(_profile.CpuBoost ? "on" : "off")}, Free VRAM {(_profile.FreeVram ? "on" : "off")}, desktop Tobii pause {(_profile.PauseTobiiDesktop ? "on" : "off")}, elevated {FreeVram.IsElevated()}, monitor mode {(_profile.UsesLowerMonitor ? FlightDisplay.Target(_profile).ToString() : "off")}. DCS hint PID {(_dcsPid?.ToString() ?? "none")}, executable {_dcsExecutable ?? "any"}, log {_dcsLog ?? "auto"}.");
+            Log($"Boost helper started (PID {Environment.ProcessId}). CPU Boost {(_profile.CpuBoost ? "on" : "off")}, Free VRAM {(_profile.FreeVram ? "on" : "off")}, desktop Tobii pause {(_profile.PauseTobiiDesktop ? "on" : "off")}, elevated {FreeVram.IsElevated()}, monitor mode {(_profile.UsesLowerMonitor ? FlightDisplay.Target(_profile).ToString() : "off")}, record CPU and GPU use {(_profile.RecordLoad ? "on" : "off")}. DCS hint PID {(_dcsPid?.ToString() ?? "none")}, executable {_dcsExecutable ?? "any"}, log {_dcsLog ?? "auto"}.");
             if (_profile.UsesLowerMonitor) ApplyDisplay();
             // Before DCS creates its OpenXR session, so the headset's eye tracker is free when Quad Views asks for gaze.
             ResumeLeftoverTobii();
@@ -224,6 +224,8 @@ public sealed class BoostRuntime
                     if (_profile.CpuBoost) ApplyToOthers(dcs.Id);
                     WriteStatus("active");
                     output.WriteLine($"CPU Boost active for DCS PID {dcs.Id}.");
+                    // Until this DCS process ends: a restarted DCS gets a record of its own.
+                    using var monitor = _profile.RecordLoad ? FlightMonitor.Start(_boostDir, dcs.Id, Log) : null;
 
                     // One handle, opened at attach, tells when this DCS exits; no PID lookups that a recycled PID could fool.
                     using var exited = new ProcessExitWaitHandle(dcs.SafeHandle);

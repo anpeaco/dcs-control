@@ -39,10 +39,24 @@ internal static class WebVerification
                      FormattableString.Invariant($"seq={20000 + i} ms={ms + 12:F3} tid=31660 phase=E op=app_end_frame result=0 dur_us=4100 a=1 b=1 c=1"),
                      FormattableString.Invariant($"seq={20000 + i} ms={ms + 1:F3} tid=26532 phase=E op=internal_end_frame result=0 dur_us=60 a=1 b=1 c=1"),
                      FormattableString.Invariant($"seq={20000 + i} ms={ms + 12:F3} tid=26532 phase=E op=internal_end_frame result=0 dur_us=60 a=1 b=1 c=1"),
-                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 14:F3} tid=31660 phase=I op=nvidia_gpu_total result=0 dur_us={2100 + i % 5 * 40} a=300 b=2100 c=1") };
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 14:F3} tid=31660 phase=I op=nvidia_gpu_total result=0 dur_us={2100 + i % 5 * 40} a=300 b=2100 c=1"),
+                     // DCS Control's 0017: DCS's CPU time 14 ms with the optimizations on and 19 ms off, GPU 17.5 ms.
+                     FormattableString.Invariant($"seq={20000 + i} ms={ms + 11:F3} tid=31660 phase=I op=frame_load result=1 dur_us=0 a={(ms < 160000 ? 14000 : 19000)} b=17500 c={22222UL | (610UL << 32) | (880UL << 48)}") };
              }),
              FormattableString.Invariant($"seq=40000 ms=150000.000 tid=31660 phase=I op=vram_status result=1 dur_us=0 a={(29000UL << 32) | 17600} b={(32607UL << 32) | 19100} c=1")]);
         var boost = Path.Combine(Directory.CreateDirectory(Path.Combine(root, "boost")).FullName, "status.json");
+        // The flight helper's once-a-second record: DCS's main thread near a whole core, the GPU at 96%, a wallpaper
+        // program on the GPU every reading.
+        var recordStart = start.AddSeconds(5);
+        File.WriteAllLines(Path.Combine(root, "boost", $"flight-{Local(recordStart, "yyyyMMdd-HHmmss")}-pid4242.csv"),
+            ["# DCS Control flight monitor v1", $"# start={Local(recordStart, "yyyy-MM-ddTHH:mm:ss.fff")} pid=4242 logical_cpus=32 gpu=NVIDIA_GeForce_RTX_4090", FlightMonitor.Columns,
+             .. Enumerable.Range(1, 400).Select(s =>
+             {
+                 var row = new FlightMonitor.FlightRow { Ms = s * 1000, CpuPct = 35, DcsCpuPct = 310, GpuPct = 96, GpuMhz = 2730, GpuC = 66 + s % 6, GpuW = 410, Throttle = s % 3 == 0 ? 0x4UL : 0x0UL, VramMiB = 17600 };
+                 row.Threads[0] = ("main #9120", 97); row.Threads[1] = ("#9344", 64);
+                 if (s % 5 == 0) { row.DcsGpuPct = 88; row.OtherGpu = "wallpaper64"; row.OtherGpuPct = 8; }
+                 return row.Format();
+             })]);
         File.WriteAllText(boost, JsonData.Serialize(new { schemaVersion = 1, state = "restored", updatedAt = end.AddSeconds(5), dcsPid = 4242,
             changed = new[] { "DCS (PID 4242): priority AboveNormal", "DCS (PID 4242): affinity all CPUs 0xFFFF", "PimaxClient (PID 31476): Normal, affinity 0xFC03", "pi_server (PID 8736): High, affinity 0xFC03", "steamwebhelper (PID 32368): BelowNormal, affinity 0xC000" },
             closed = Array.Empty<string>(), restored = 3, errors = new[] { "platform_runtime_VR4PIMAXP3B_service (PID 32536): Access is denied. (it may need the administrator rights option)" } }));

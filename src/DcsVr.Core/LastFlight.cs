@@ -17,7 +17,7 @@ public sealed record FlightSources(string? DcsLog, string? PimaxLogDirectory = n
 /// <summary>A summary of the last DCS session, read from logs after DCS exits. Parts without a source are null.</summary>
 public sealed record FlightSummary(DateTimeOffset Start, DateTimeOffset End, bool Closed, int? DcsPid, HeadsetFrames? Headset, FramegenShare? Framegen,
     FrameTimes? FrameTime, NeuralState? Dlss5, BoostResult? Boost, PrefetchResult? Prefetch,
-    FrameCadence? Pacing = null, FramegenCost? FramegenCost = null, EngineComparison? EngineSwitch = null)
+    FrameCadence? Pacing = null, FramegenCost? FramegenCost = null, EngineComparison? EngineSwitch = null, FrameLoad? Load = null, MachineLoad? Machine = null)
 {
     public TimeSpan Duration => End - Start;
 }
@@ -61,7 +61,46 @@ public sealed record FramegenCost(double? GpuPerPairMs, int? VramPeakMiB, int? V
 /// <summary>The flight's own A/B when the pilot used the engine optimizations' in-flight switch: DCS's frames in the
 /// stretches with the optimizations on and off (the first 2 s after each switch left out). The frame figures are null
 /// unless both sides have at least 20 s. The scene can differ between the stretches.</summary>
-public sealed record EngineComparison(int Switches, double OnSeconds, double OffSeconds, double? OnFrameMs, double? OffFrameMs, double? OnWaitMs, double? OffWaitMs);
+/// <param name="OnCpuMs">DCS's median CPU time per frame in the stretches with the optimizations on (OFXR's frame_load);
+/// the GPU likewise. Null without those records, or unless both sides have at least 20 s.</param>
+public sealed record EngineComparison(int Switches, double OnSeconds, double OffSeconds, double? OnFrameMs, double? OffFrameMs, double? OnWaitMs, double? OffWaitMs,
+    double? OnCpuMs = null, double? OffCpuMs = null, double? OnGpuMs = null, double? OffGpuMs = null);
+/// <summary>DCS's CPU and GPU time per frame against its frame slot, from OFXR's frame_load records (one per DCS frame,
+/// DCS Control's patch 0017), over the flying seconds.</summary>
+/// <param name="CpuP50Ms">DCS's CPU time per frame: the time between two frames less what OFXR held it for pacing. It
+/// also grows while the graphics driver holds DCS for the GPU. P90 and P99 likewise.</param>
+/// <param name="GpuP50Ms">The GPU's busy time for DCS's process per frame (frame generation, in the same process,
+/// included), from Windows' GPU scheduler; null without readings. P90 likewise.</param>
+/// <param name="DcsGpuShareP50">DCS's process's share of the GPU, median; <paramref name="GpuShareP50"/> and P90 the
+/// whole GPU's (every process: the VR runtime, Virtual Desktop's encoder, other programs).</param>
+/// <param name="SlotMs">DCS's frame slot: the display period OFXR gave it (median); the median frame interval when
+/// OFXR gave none.</param>
+/// <param name="Limit">"gpu" when the GPU's p90 reaches 85% of the slot, else "cpu" when the CPU's does, else
+/// "headroom".</param>
+/// <param name="HeadroomMs">The slot less the larger of the CPU and GPU p90 (negative: over the slot).</param>
+public sealed record FrameLoad(double CpuP50Ms, double CpuP90Ms, double CpuP99Ms, double? GpuP50Ms, double? GpuP90Ms, double? DcsGpuShareP50,
+    double? GpuShareP50, double? GpuShareP90, double SlotMs, string Limit, double HeadroomMs, long Frames)
+{
+    /// <summary>The share of the slot either side may use before it counts as the limit.</summary>
+    public const double LimitShare = 0.85;
+    public static string Classify(double cpuP90, double? gpuP90, double slot) =>
+        gpuP90 is { } g && g >= LimitShare * slot ? "gpu" : cpuP90 >= LimitShare * slot ? "cpu" : "headroom";
+}
+/// <summary>What the PC did during the flight, from the flight helper's once-a-second record (<see cref="FlightMonitor"/>),
+/// over the flying seconds when OFXR's log gives them.</summary>
+/// <param name="CpuP90">The whole CPU's use, p90 of the seconds, percent.</param>
+/// <param name="DcsThread">DCS's busiest thread (the one with the highest p90 share of one logical CPU) and that share;
+/// 100 is a whole core.</param>
+/// <param name="SaturatedShare">Share of seconds one DCS thread used 95% of a core or more.</param>
+/// <param name="GpuUtilP50">NVML's GPU utilisation, median and p90; clock (MHz), temperature (peak, °C) and power (W)
+/// likewise.</param>
+/// <param name="ThermalShare">Share of seconds the GPU held its clocks back for temperature; <paramref name="PowerShare"/>
+/// at its power limit.</param>
+/// <param name="OtherGpu">The busiest other process on the GPU (p90 of its readings) when 5% or more.</param>
+/// <param name="OtherCpu">The busiest other process on the CPU (p90, percent of one logical CPU) when 25% or more.</param>
+public sealed record MachineLoad(int Seconds, double? CpuP90, string? DcsThread, double? DcsThreadP90, double SaturatedShare,
+    double? GpuUtilP50, double? GpuUtilP90, double? GpuClockP50, double? GpuTempMax, double? GpuPowerP50, double ThermalShare, double PowerShare,
+    string? OtherGpu, double? OtherGpuP90, string? OtherCpu, double? OtherCpuP90, double? VramPeakMiB);
 /// <summary>The engine optimizations' state over the flight, on OFXR's log timeline (milliseconds since it started).</summary>
 public sealed record EngineSwitches(int Count, IReadOnlyList<EngineStretch> Stretches);
 public sealed record EngineStretch(double FromMs, double ToMs, bool Off);
@@ -83,13 +122,16 @@ public static partial class LastFlight
         var boost = sources.BoostStatus is { } status && File.Exists(status) ? Cached(status, () => ParseBoostStatus(File.ReadAllText(status))) : null;
         if (boost is not null && !(boost.UpdatedAt >= start.AddMinutes(-1) && boost.UpdatedAt <= end.AddMinutes(10))) boost = null;
         var pid = ofxrPid ?? boost?.DcsPid;
+        (DateTime, DateTime)? flying = ofxrStart is { } began && ofxr?.FlyingFromMs is { } from && ofxr.FlyingToMs is { } to
+            ? (began.AddMilliseconds(from), began.AddMilliseconds(to)) : null;
         return new(start, end, closed, pid,
             ReadPimax(sources.PimaxLogDirectory, start, end, pid),
             ofxr?.Share, ofxr?.Times,
             ReadCheeky(sources.DcsBin, start, end),
             boost?.Result,
             ReadPrefetch(PrefetchLog(log), start, end),
-            ofxr?.Pacing, ofxr?.Cost, ofxr?.Engine);
+            ofxr?.Pacing, ofxr?.Cost, ofxr?.Engine, ofxr?.Load,
+            ReadFlightMonitor(sources.BoostStatus, pid, start, end, flying));
     }
 
     // ---- dcs.log ---------------------------------------------------------------------------------------------------
@@ -201,7 +243,9 @@ public static partial class LastFlight
     /// <summary>The app writes max_file_mb=256: OFXR starts its log again from empty when it reaches that.</summary>
     private const long MaxOfxr = 300L * 1024 * 1024;
 
-    public sealed record OfxrResult(FramegenShare? Share, FrameTimes? Times, FrameCadence? Pacing = null, FramegenCost? Cost = null, EngineComparison? Engine = null);
+    /// <param name="FlyingFromMs">The flying seconds' span on OFXR's log timeline (milliseconds since it started).</param>
+    public sealed record OfxrResult(FramegenShare? Share, FrameTimes? Times, FrameCadence? Pacing = null, FramegenCost? Cost = null, EngineComparison? Engine = null,
+        FrameLoad? Load = null, double? FlyingFromMs = null, double? FlyingToMs = null);
 
     /// <summary>One streaming pass over OFXR's flight log, cached by size and timestamp; the engine switches come from
     /// another file and are applied to the cached frames each time.</summary>
@@ -219,7 +263,10 @@ public static partial class LastFlight
     /// display period (ns) OFXR gave it; app_end_frame E: dur_us = DCS's time in xrEndFrame;</item>
     /// <item>internal_end_frame E: a frame OFXR passed on to the headset runtime; nvidia_gpu_total: one generated pair's
     /// GPU time (dur_us); vram_status result=1: a = this process's resident MiB (bits 0–31) and its budget (32–63),
-    /// b = every process's use (0–31) and the GPU's size (32–63).</item>
+    /// b = every process's use (0–31) and the GPU's size (32–63);</item>
+    /// <item>frame_load (DCS Control's patch 0017), one per DCS frame: a = its CPU time and b = its GPU time in
+    /// microseconds (b valid with result=1), c = the interval (bits 0–31), DCS's GPU share (32–47) and the whole GPU's
+    /// (48–63) in permille.</item>
     /// </list>
     /// <paramref name="engine"/>: the in-flight engine switch on the same timeline (<see cref="ParseEngineSwitches"/>).</summary>
     public static OfxrResult? ParseOfxr(IEnumerable<string>? lines, EngineSwitches? engine = null) => lines is null ? null : OfxrScan.Of(lines).Summarize(engine);
@@ -233,6 +280,9 @@ public static partial class LastFlight
         private int _two, _three, _switches; private bool _adaptive, _first = true, _wrapped;
         private readonly List<double> _latency = [], _frameMs = [], _waitUs = [], _periodNs = [], _endMs = [], _endUs = [], _gpuUs = [];
         private readonly List<int> _appPerSecond = [], _outPerSecond = [];
+        // frame_load: per DCS frame its time (ms on the log's timeline), CPU and GPU microseconds (GPU -1 when not
+        // known), and the GPU shares in permille (-1 when not known).
+        private readonly List<double> _loadMs = [], _loadCpuUs = [], _loadGpuUs = [], _loadOwnShare = [], _loadGpuShare = [];
         private long _vramPeak; private int? _vramBudget, _gpuMemory;
         /// <summary>DCS frames in a second for it to count as flying (loading screens and menus run far slower).</summary>
         private const int FlyingFps = 10;
@@ -274,6 +324,15 @@ public static partial class LastFlight
                 case "nvidia_gpu_total":
                     if (Field(line, " result=", out var ok) && ok is "0" && Whole(line, " dur_us=") is { } gpu and > 0 and < 1_000_000) _gpuUs.Add(gpu);
                     return;
+                case "frame_load":
+                    if (Real(line, " ms=") is { } loadMs && Whole(line, " a=") is { } cpu && Whole(line, " b=") is { } gpuUs && Whole(line, " c=") is { } c
+                        && Field(line, " result=", out var valid))
+                    {
+                        var known = valid is "1";
+                        _loadMs.Add(loadMs); _loadCpuUs.Add(cpu); _loadGpuUs.Add(known ? gpuUs : -1);
+                        _loadOwnShare.Add(known ? (c >> 32) & 0xFFFF : -1); _loadGpuShare.Add(known ? c >> 48 : -1);
+                    }
+                    return;
                 case "vram_status":
                     if (Field(line, " result=", out var kind) && kind is "1" && Whole(line, " a=") is { } a && Whole(line, " b=") is { } b
                         && (long)(a & 0xFFFFFFFF) is var resident and > 0 && resident > _vramPeak)
@@ -306,20 +365,20 @@ public static partial class LastFlight
             var share = _two + _three == 0 ? null : new FramegenShare(_two, _three, _switches, _adaptive);
             var latency = _latency.Order().ToList();
             var times = latency.Count == 0 ? null : new FrameTimes(Percentile(latency, .5), Percentile(latency, .9), latency.Count);
-            var (pacing, comparison) = Pacing(engine);
+            var (pacing, comparison, load, flying) = Pacing(engine);
             var gpu = _gpuUs.Order().ToList();
             var cost = gpu.Count == 0 && _vramPeak == 0 ? null
                 : new FramegenCost(gpu.Count == 0 ? null : Math.Round(Quantile(gpu, .5) / 1000, 2), _vramPeak == 0 ? null : (int)Math.Min(_vramPeak, int.MaxValue), _vramBudget, _gpuMemory);
-            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison);
+            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To);
         }
 
-        private (FrameCadence?, EngineComparison?) Pacing(EngineSwitches? engine)
+        private (FrameCadence?, EngineComparison?, FrameLoad?, (double From, double To)?) Pacing(EngineSwitches? engine)
         {
             // Flying: from the first 5 seconds in a row with at least FlyingFps DCS frames, every such second.
             int first = -1;
             for (int s = 0, run = 0; s < _appPerSecond.Count && first < 0; s++)
                 if ((run = _appPerSecond[s] >= FlyingFps ? run + 1 : 0) == 5) first = s - 4;
-            if (first < 0) return (null, null);
+            if (first < 0) return (null, null, null, null);
             bool Flying(double ms) => (int)(ms / 1000) is var s && s >= first && s < _appPerSecond.Count && _appPerSecond[s] >= FlyingFps;
             var seconds = 0; long output = 0;
             for (var s = first; s < _appPerSecond.Count; s++)
@@ -342,7 +401,7 @@ public static partial class LastFlight
                 if (stretch < engine.Stretches.Count && engine.Stretches[stretch] is { } e && ms >= e.FromMs + 2000)
                     (e.Off ? off : on).Add(interval, _waitUs[i] / 1000);
             }
-            if (intervals.Count == 0) return (null, null);
+            if (intervals.Count == 0) return (null, null, null, null);
             intervals.Sort(); waits.Sort(); periods.Sort();
             var median = Quantile(intervals, .5);
             double? period = periods.Count == 0 ? null : Quantile(periods, .5);
@@ -352,23 +411,56 @@ public static partial class LastFlight
                 output == 0 ? null : Math.Round((double)output / seconds, 1),
                 Percentile(intervals, .5), Percentile(intervals, .95), Percentile(intervals, .99), intervals.Count(d => d > 2 * median), frames,
                 Percentile(waits, .5), Percentile(waits, .9), ends.Count == 0 ? null : Percentile(ends, .5), seconds, _wrapped);
+            // frame_load: DCS's CPU and GPU time per frame, against the slot OFXR gave it.
+            var cpus = new List<double>(); var gpus = new List<double>(); var own = new List<double>(); var whole = new List<double>();
+            stretch = 0;
+            for (var i = 0; i < _loadMs.Count; i++)
+            {
+                var ms = _loadMs[i];
+                if (!Flying(ms)) continue;
+                var cpu = _loadCpuUs[i] / 1000; double? gpu = _loadGpuUs[i] >= 0 ? _loadGpuUs[i] / 1000 : null;
+                cpus.Add(cpu);
+                if (gpu is { } g) gpus.Add(g);
+                if (_loadOwnShare[i] >= 0) { own.Add(_loadOwnShare[i] / 10); whole.Add(_loadGpuShare[i] / 10); }
+                if (engine is null) continue;
+                while (stretch < engine.Stretches.Count && engine.Stretches[stretch].ToMs <= ms) stretch++;
+                if (stretch < engine.Stretches.Count && engine.Stretches[stretch] is { } e && ms >= e.FromMs + 2000)
+                    (e.Off ? off : on).AddLoad(cpu, gpu);
+            }
+            FrameLoad? load = null;
+            if (cpus.Count > 0)
+            {
+                cpus.Sort(); gpus.Sort(); own.Sort(); whole.Sort();
+                var slot = period ?? median;
+                var cpuP90 = Percentile(cpus, .9); double? gpuP90 = gpus.Count == 0 ? null : Percentile(gpus, .9);
+                load = new(Percentile(cpus, .5), cpuP90, Percentile(cpus, .99), gpus.Count == 0 ? null : Percentile(gpus, .5), gpuP90,
+                    own.Count == 0 ? null : Percentile(own, .5), whole.Count == 0 ? null : Percentile(whole, .5), whole.Count == 0 ? null : Percentile(whole, .9),
+                    Math.Round(slot, 2), FrameLoad.Classify(cpuP90, gpuP90, slot), Math.Round(slot - Math.Max(cpuP90, gpuP90 ?? 0), 1), cpus.Count);
+            }
             EngineComparison? comparison = null;
             if (engine is not null)
             {
                 var enough = on.Seconds >= 20 && off.Seconds >= 20;
-                comparison = new(engine.Count, Math.Round(on.Seconds), Math.Round(off.Seconds), enough ? on.Frame : null, enough ? off.Frame : null, enough ? on.Wait : null, enough ? off.Wait : null);
+                comparison = new(engine.Count, Math.Round(on.Seconds), Math.Round(off.Seconds), enough ? on.Frame : null, enough ? off.Frame : null, enough ? on.Wait : null, enough ? off.Wait : null,
+                    enough ? on.Cpu : null, enough ? off.Cpu : null, enough ? on.Gpu : null, enough ? off.Gpu : null);
             }
-            return (pacing, comparison);
+            var last = first;
+            for (var s = first; s < _appPerSecond.Count; s++) if (_appPerSecond[s] >= FlyingFps) last = s;
+            return (pacing, comparison, load, (first * 1000.0, (last + 1) * 1000.0));
         }
 
         /// <summary>DCS's frames in the stretches with the engine optimizations on, or off.</summary>
         private sealed class Side
         {
-            private readonly List<double> _intervals = [], _waits = [];
+            private readonly List<double> _intervals = [], _waits = [], _cpus = [], _gpus = [];
             public double Seconds { get; private set; }
             public void Add(double interval, double wait) { _intervals.Add(interval); _waits.Add(wait); Seconds += interval / 1000; }
-            public double? Frame => _intervals.Count == 0 ? null : Percentile(_intervals.Order().ToList(), .5);
-            public double? Wait => _waits.Count == 0 ? null : Percentile(_waits.Order().ToList(), .5);
+            public void AddLoad(double cpu, double? gpu) { _cpus.Add(cpu); if (gpu is { } g) _gpus.Add(g); }
+            public double? Frame => Median(_intervals);
+            public double? Wait => Median(_waits);
+            public double? Cpu => Median(_cpus);
+            public double? Gpu => Median(_gpus);
+            private static double? Median(List<double> values) => values.Count == 0 ? null : Percentile(values.Order().ToList(), .5);
         }
 
         private static void Count(List<int> perSecond, double ms)
@@ -396,6 +488,107 @@ public static partial class LastFlight
             Field(line, key, out var v) && ulong.TryParse(v, NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : null;
     }
     [GeneratedRegex(@"\bop=(latency_status|adaptive_switch) result=(-?\d+) dur_us=\d+ a=(\d+) b=(\d+)")] private static partial Regex OfxrLineRegex();
+
+    // ---- The flight helper's record of the PC (FlightMonitor) -----------------------------------------------------
+
+    /// <summary>flight-YYYYMMDD-HHMMSS-pidN.csv next to the helper's status.json that started during the session (the
+    /// one for DCS's PID first), summarised over the flying seconds when <paramref name="flying"/> (local) is known.</summary>
+    private static MachineLoad? ReadFlightMonitor(string? boostStatus, int? pid, DateTimeOffset start, DateTimeOffset end, (DateTime From, DateTime To)? flying)
+    {
+        try
+        {
+            if (boostStatus is null || Path.GetDirectoryName(boostStatus) is not { } directory || !Directory.Exists(directory)) return null;
+            var (from, to) = (start.ToLocalTime().DateTime.AddMinutes(-10), end.ToLocalTime().DateTime.AddMinutes(1));
+            var files = new DirectoryInfo(directory).EnumerateFiles(FlightMonitor.FilePrefix + "*.csv")
+                .Select(f => (File: f, Match: FlightFileRegex().Match(f.Name)))
+                .Where(x => x.Match.Success && DateTime.TryParseExact(x.Match.Groups[1].Value, "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var at) && at >= from && at <= to)
+                .OrderByDescending(x => x.File.Name, StringComparer.Ordinal).ToList();
+            var file = files.FirstOrDefault(x => pid is { } p && x.Match.Groups[2].Value == p.ToString(CultureInfo.InvariantCulture)).File ?? files.FirstOrDefault().File;
+            if (file is null) return null;
+            var lines = Cached(file.FullName, () => ReadLines(file.FullName, 64L * 1024 * 1024, _ => true));
+            return lines is null ? null : ParseFlightMonitor(lines, flying?.From, flying?.To);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+    [GeneratedRegex(@"^flight-(\d{8}-\d{6})-pid(\d+)\.csv$", RegexOptions.IgnoreCase)] private static partial Regex FlightFileRegex();
+
+    /// <summary>The helper's CSV (see <see cref="FlightMonitor"/>): "# start=…" gives its local start time, the first
+    /// line without "#" the columns, then one row a second. Rows outside <paramref name="fromLocal"/>..<paramref name="toLocal"/>
+    /// (the flying seconds) are left out when both the start and the window are known. Null without rows.</summary>
+    public static MachineLoad? ParseFlightMonitor(IEnumerable<string> lines, DateTime? fromLocal = null, DateTime? toLocal = null)
+    {
+        DateTime? began = null; Dictionary<string, int>? columns = null;
+        var cpu = new List<double>(); var gpuUse = new List<double>(); var clock = new List<double>(); var power = new List<double>();
+        double? temperature = null, vram = null;
+        var threads = new Dictionary<string, List<double>>(); var otherGpu = new Dictionary<string, List<double>>(); var otherCpu = new Dictionary<string, List<double>>();
+        int seconds = 0, saturated = 0, thermal = 0, capped = 0, gpuReadings = 0;
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("# start=", StringComparison.Ordinal))
+            {
+                var value = line[8..].Split(' ')[0];
+                if (DateTime.TryParseExact(value, "yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture, DateTimeStyles.None, out var at)) began = at;
+                continue;
+            }
+            if (line.Length == 0 || line[0] == '#') continue;
+            var cells = line.Split(',');
+            if (columns is null) { columns = cells.Select((name, i) => (name, i)).ToDictionary(c => c.name, c => c.i, StringComparer.Ordinal); continue; }
+            if (cells.Length != columns.Count) continue;
+            string Cell(string name) => columns.TryGetValue(name, out var i) ? cells[i] : "";
+            double? Number(string name) => double.TryParse(Cell(name), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && double.IsFinite(d) ? d : null;
+            if (Number("ms") is not { } ms) continue;
+            if (began is { } b && ((fromLocal is { } f && b.AddMilliseconds(ms) < f) || (toLocal is { } t && b.AddMilliseconds(ms) > t))) continue;
+            seconds++;
+            if (Number("cpu_pct") is { } c) cpu.Add(c);
+            var busiest = 0.0;
+            for (var k = 1; k <= 3; k++)
+                if (Cell($"t{k}") is { Length: > 0 } name && Number($"t{k}_pct") is { } pct)
+                {
+                    (threads.TryGetValue(name, out var list) ? list : threads[name] = []).Add(pct);
+                    busiest = Math.Max(busiest, pct);
+                }
+            if (busiest >= 95) saturated++;
+            if (Cell("other_cpu") is { Length: > 0 } otherName && Number("other_cpu_pct") is { } otherPct)
+                (otherCpu.TryGetValue(otherName, out var list) ? list : otherCpu[otherName] = []).Add(otherPct);
+            if (Number("gpu_pct") is { } g) gpuUse.Add(g);
+            if (Number("gpu_mhz") is { } mhz) clock.Add(mhz);
+            if (Number("gpu_w") is { } w) power.Add(w);
+            if (Number("gpu_c") is { } celsius) temperature = Math.Max(temperature ?? celsius, celsius);
+            if (Number("vram_mib") is { } mib) vram = Math.Max(vram ?? mib, mib);
+            if (Cell("throttle") is { Length: > 2 } hex && hex.StartsWith("0x", StringComparison.Ordinal)
+                && ulong.TryParse(hex.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var reasons))
+            {
+                if ((reasons & FlightMonitor.ThermalReasons) != 0) thermal++;
+                if ((reasons & FlightMonitor.PowerReasons) != 0) capped++;
+            }
+            if (Number("dcs_gpu_pct") is not null)
+            {
+                gpuReadings++;
+                if (Cell("other_gpu") is { Length: > 0 } gpuName && Number("other_gpu_pct") is { } gpuPct)
+                    (otherGpu.TryGetValue(gpuName, out var list) ? list : otherGpu[gpuName] = []).Add(gpuPct);
+            }
+        }
+        if (seconds == 0) return null;
+        // A share over every sample of the flight: seconds a thread or program was not the busiest count as 0.
+        static (string? Name, double? P90) Busiest(Dictionary<string, List<double>> samples, int total)
+        {
+            (string? Name, double? P90) best = (null, null);
+            foreach (var (name, values) in samples)
+            {
+                var all = values.Concat(Enumerable.Repeat(0.0, Math.Max(0, total - values.Count))).Order().ToList();
+                var p90 = Percentile(all, .9);
+                if (best.P90 is null || p90 > best.P90) best = (name, p90);
+            }
+            return best;
+        }
+        var thread = Busiest(threads, seconds); var gpuOther = Busiest(otherGpu, gpuReadings); var cpuOther = Busiest(otherCpu, seconds);
+        static double? P(List<double> values, double q) => values.Count == 0 ? null : Percentile(values.Order().ToList(), q);
+        return new(seconds, P(cpu, .9), thread.Name, thread.P90, Math.Round((double)saturated / seconds, 3),
+            P(gpuUse, .5), P(gpuUse, .9), P(clock, .5), temperature, P(power, .5),
+            Math.Round((double)thermal / seconds, 3), Math.Round((double)capped / seconds, 3),
+            gpuOther.P90 >= 5 ? gpuOther.Name : null, gpuOther.P90 >= 5 ? gpuOther.P90 : null,
+            cpuOther.P90 >= 25 ? cpuOther.Name : null, cpuOther.P90 >= 25 ? cpuOther.P90 : null, vram is { } v ? Math.Round(v) : null);
+    }
 
     // ---- Engine optimizations' in-flight switch -------------------------------------------------------------------
 

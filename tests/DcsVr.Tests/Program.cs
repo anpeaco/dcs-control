@@ -602,6 +602,95 @@ Test("Last flight: dcs.log session, Pimax frames, OFXR modes and frame time, DLS
     var other = LastFlight.Read(new(dcsLog, null, Path.Combine(flight, "managed/profiles"), status, bin))!;
     Require(other.Boost is null && other.Dlss5 is null && other.Headset is null && other.DcsPid == 24208);
 });
+Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, what limits it, and the switch's CPU and GPU", () =>
+{
+    // 60 flying seconds at 30 FPS: OFXR gave DCS a 33.3 ms slot.
+    static List<string> Load(Func<double, (int CpuUs, int GpuUs, bool Known)> frame)
+    {
+        var lines = new List<string> { "seq=1 ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242" };
+        for (var i = 0; i < 1800; i++)
+        {
+            var ms = 10000 + i * 100.0 / 3;
+            lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=5000 a=1 b=33333333 c=1"));
+            var (cpu, gpu, known) = frame(ms);
+            var c = 33333UL | (450UL << 32) | (720UL << 48);
+            lines.Add(FormattableString.Invariant($"seq=4 ms={ms + 20:F3} tid=1 phase=I op=frame_load result={(known ? 1 : 0)} dur_us=0 a={cpu} b={(known ? gpu : 0)} c={c}"));
+        }
+        return lines;
+    }
+    var spare = LastFlight.ParseOfxr(Load(_ => (18000, 12000, true)))!;
+    Require(spare.Load is { CpuP50Ms: 18, CpuP90Ms: 18, CpuP99Ms: 18, GpuP50Ms: 12, GpuP90Ms: 12, DcsGpuShareP50: 45, GpuShareP50: 72, GpuShareP90: 72, SlotMs: 33.33, Limit: "headroom", HeadroomMs: 15.3, Frames: 1800 },
+        "both fit in the slot: the spare time is the slot less the larger p90");
+    Require(spare.FlyingFromMs == 10000 && spare.FlyingToMs == 70000, "the flying seconds' span");
+    Require(LastFlight.ParseOfxr(Load(_ => (18000, 30000, true)))!.Load is { Limit: "gpu", HeadroomMs: 3.3 }, "the GPU's p90 reaches 85% of the slot");
+    Require(LastFlight.ParseOfxr(Load(_ => (30000, 12000, true)))!.Load is { Limit: "cpu" }, "the CPU's does, the GPU's does not");
+    Require(LastFlight.ParseOfxr(Load(_ => (36000, 30000, true)))!.Load is { Limit: "gpu", HeadroomMs: -2.7 }, "past the slot; the GPU decides first");
+    Require(LastFlight.ParseOfxr(Load(_ => (18000, 0, false)))!.Load is { GpuP50Ms: null, GpuP90Ms: null, DcsGpuShareP50: null, GpuShareP90: null, Limit: "headroom" }, "no GPU readings");
+    Require(LastFlight.ParseOfxr(Load(_ => (18000, 12000, true)).Where(l => !l.Contains("frame_load")))!.Load is null, "an OFXR without 0017 has no load");
+    // The engine switch at 45 s: CPU 20 ms with the optimizations on, 15 ms off.
+    var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
+    var switched = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:00:45.000 hotkey: engine optimizations OFF"], ofxrStart, ofxrStart);
+    Require(LastFlight.ParseOfxr(Load(ms => (ms < 45000 ? 20000 : 15000, 12000, true)), switched)!.Engine is { OnCpuMs: 20, OffCpuMs: 15, OnGpuMs: 12, OffGpuMs: 12 },
+        "the switch's own A/B on CPU and GPU time");
+});
+Test("Last flight: the flight helper's record gives the PC's load over the flying seconds", () =>
+{
+    var csv = new List<string> { "# DCS Control flight monitor v1", "# start=2026-10-05T19:00:00.000 pid=4242 logical_cpus=32 gpu=NVIDIA_GeForce_RTX_4090", FlightMonitor.Columns };
+    for (var s = 1; s <= 100; s++)
+    {
+        var row = new FlightMonitor.FlightRow { Ms = s * 1000, CpuPct = s <= 10 ? 5 : 40, DcsCpuPct = 250, GpuPct = s <= 10 ? 10 : 90, GpuMhz = 2700, GpuC = 60 + s / 10.0, GpuW = 380,
+            Throttle = s > 90 ? 0x20UL : s > 50 ? 0x4UL : 0x1UL, VramMiB = 18000 + s };
+        row.Threads[0] = ("main #100", s <= 10 ? 20 : 98); row.Threads[1] = ("#200", 60);
+        if (s % 5 == 0) { row.DcsGpuPct = 70; if (s > 50) { row.OtherGpu = "wallpaper64"; row.OtherGpuPct = 12; } }
+        if (s % 2 == 0) { row.OtherCpu = "MsMpEng"; row.OtherCpuPct = 40; }
+        csv.Add(row.Format());
+    }
+    csv.Add("garbage,1"); csv.Add("# a comment");
+    Require(LastFlight.ParseFlightMonitor(csv) is { Seconds: 100, CpuP90: 40, DcsThread: "main #100", DcsThreadP90: 98, SaturatedShare: .9, GpuUtilP50: 90, GpuUtilP90: 90,
+        GpuClockP50: 2700, GpuTempMax: 70, GpuPowerP50: 380, ThermalShare: .1, PowerShare: .4, OtherGpu: "wallpaper64", OtherGpuP90: 12, OtherCpu: "MsMpEng", OtherCpuP90: 40, VramPeakMiB: 18100 },
+        "the whole record");
+    Require(LastFlight.ParseFlightMonitor(csv, new DateTime(2026, 10, 5, 19, 0, 11), new DateTime(2026, 10, 5, 19, 0, 50)) is { Seconds: 40, SaturatedShare: 1, ThermalShare: 0, PowerShare: 0,
+        GpuTempMax: 65, OtherGpu: null, OtherGpuP90: null }, "the flying seconds only");
+    Require(LastFlight.ParseFlightMonitor(csv.Take(3)) is null, "no rows");
+});
+Test("Flight monitor: process snapshot walk, GPU engine shares, CSV rows", () =>
+{
+    // Two SystemProcessInformation entries at a pretend address; the image names point into the buffer.
+    const ulong at = 0x10000;
+    var buffer = new byte[0x1B0 + 0x100 + 32];
+    void Put64(int offset, long value) => System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(offset), value);
+    void Put32(int offset, int value) => System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(offset), value);
+    void Name(int entry, int offset, string name)
+    {
+        var bytes = Encoding.Unicode.GetBytes(name); bytes.CopyTo(buffer, offset);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(entry + 0x38), (ushort)bytes.Length);
+        Put64(entry + 0x40, (long)at + offset);
+    }
+    Put32(0x00, 0x1B0); Put32(0x04, 2); Put64(0x28, 100); Put64(0x30, 50); Put64(0x50, 4242); Name(0, 0x1A0, "DCS.exe");
+    Put64(0x100 + 0x00, 5); Put64(0x100 + 0x08, 6); Put64(0x100 + 0x10, 1000); Put64(0x100 + 0x30, 11);
+    Put64(0x150 + 0x00, 1); Put64(0x150 + 0x08, 1); Put64(0x150 + 0x10, 500); Put64(0x150 + 0x30, 12);
+    Put32(0x1B0, 0); Put32(0x1B4, 1); Put64(0x1B0 + 0x28, 7); Put64(0x1B0 + 0x50, 7); Name(0x1B0, 0x1B0 + 0x100, "Other.exe");
+    var snapshot = FlightMonitor.ParseProcesses(buffer, at, 4242, 1);
+    Require(snapshot.Processes[4242] == 150 && snapshot.Names[4242] == "DCS" && snapshot.Names[7] == "Other" && snapshot.Processes[7] == 7, "processes and names");
+    Require(snapshot.DcsThreads.Count == 2 && snapshot.DcsThreads[11] == (11, 1000) && snapshot.DcsThreads[12] == (2, 500), "DCS's threads only");
+    Require(FlightMonitor.ParseProcesses(buffer.AsSpan(0, 0x80), at, 4242, 1).Processes.Count == 0, "a cut buffer ends the walk");
+    // Task Manager's figure: per engine type the sum of its engines, the busiest type.
+    var shares = FlightMonitor.GpuShareByProcess([("pid_10_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 40), ("pid_10_luid_0x0_0x1_phys_0_eng_1_engtype_3D", 5),
+        ("pid_10_luid_0x0_0x1_phys_0_eng_5_engtype_Copy", 20), ("pid_22_luid_0x0_0x1_phys_0_eng_9_engtype_VideoEncode", 30), ("bogus", 99), ("pid_5_luid_0x0_0x1_phys_0_eng_0_engtype_3D", double.NaN)]);
+    Require(shares.Count == 2 && shares[10] == 45 && shares[22] == 30, "GPU shares by process");
+    // Rows: one cell per column, CSV-safe names, empty cells for what was not measured.
+    var empty = new FlightMonitor.FlightRow { Ms = 1000 };
+    Require(empty.Format().Split(',').Length == FlightMonitor.Columns.Split(',').Length && empty.Format() == "1000" + new string(',', FlightMonitor.Columns.Split(',').Length - 1));
+    var named = new FlightMonitor.FlightRow { Ms = 2, Throttle = 0x24, OtherGpu = "a,b\"c" }; named.Threads[0] = ("Render, \"x\"", 99.94);
+    Require(named.Format().Split(',').Length == FlightMonitor.Columns.Split(',').Length && named.Format().Contains(",Render x,99.9,") && named.Format().Contains(",0x24,") && named.Format().Contains(",a b c,"), named.Format());
+    // Only the newest files are kept.
+    var folder = Path.Combine(root, "flight-monitor"); Directory.CreateDirectory(folder);
+    for (var i = 0; i < 12; i++) File.WriteAllText(Path.Combine(folder, $"flight-202610{05 + i / 10:00}-1900{i % 10:00}-pid1.csv"), "x");
+    File.WriteAllText(Path.Combine(folder, "status.json"), "{}");
+    FlightMonitor.Prune(folder, 9);
+    var left = Directory.GetFiles(folder).Select(Path.GetFileName).Order().ToArray();
+    Require(left.Length == 10 && left.Contains("status.json") && left.Contains("flight-20261006-190001-pid1.csv") && !left.Contains("flight-20261005-190002-pid1.csv"), string.Join(" ", left));
+});
 Test("A restore resumed after a conflict removes the empty folder of a created file, never the root", () =>
 {
     var bin = Path.Combine(root, "resume-folder/bin"); Directory.CreateDirectory(bin);
@@ -2546,7 +2635,9 @@ Test("Free VRAM closes only listed programs, never DCS, its ancestors, launchers
         Require(ProfileValidation.Validate(p with { FreeVramApps = [bad] }).Any(i => i.Code == "boost-launcher" && i.Severity == IssueSeverity.Error), bad);
     Require(ProfileValidation.Validate(p with { FreeVramApps = ["*"] }).Any(i => i.Code == "boost-app-wildcard"));
     Require(!ProfileValidation.Validate(new VrProfile { FreeVramApps = ["steam"] }).Any(i => i.Code.StartsWith("boost")), "the list is checked only when the feature is on");
-    Require(new VrProfile { FreeVram = true }.UsesBoostHelper && new VrProfile { LowerMonitor = true }.UsesBoostHelper && !new VrProfile { SmallDcsWindow = true }.UsesBoostHelper && !new VrProfile().UsesBoostHelper);
+    Require(new VrProfile { FreeVram = true, RecordLoad = false }.UsesBoostHelper && new VrProfile { LowerMonitor = true, RecordLoad = false }.UsesBoostHelper
+        && !new VrProfile { SmallDcsWindow = true, RecordLoad = false }.UsesBoostHelper && !new VrProfile { RecordLoad = false }.UsesBoostHelper);
+    Require(new VrProfile().RecordLoad && new VrProfile().UsesBoostHelper && !new VrProfile().BoostHelperElevated, "Record CPU and GPU use is on by default, and it alone starts the helper unelevated");
 });
 Test("What Boost will do shows each program's approximate VRAM and the total it would free", () =>
 {

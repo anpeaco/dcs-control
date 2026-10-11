@@ -212,6 +212,9 @@ public sealed record VrProfile
     public bool FreeVramReopen { get; init; } = true;
     /// <summary>End a program that is still running 5 s after the close request. Off: it is left running.</summary>
     public bool FreeVramForce { get; init; }
+    /// <summary>Record CPU and GPU use: the flight helper writes the PC's load once a second while DCS runs
+    /// (<see cref="FlightMonitor"/>), for Last flight. A measurement only; nothing is changed.</summary>
+    public bool RecordLoad { get; init; } = true;
     /// <summary>The profile sets DCS's desktop window to 1280×720, windowed (options.lua, restored with the profile).</summary>
     public bool SmallDcsWindow { get; init; }
     public const int SmallWindowWidth = 1280, SmallWindowHeight = 720;
@@ -313,7 +316,7 @@ public sealed record VrProfile
     /// Optimizations only and when DCS starts from Steam or a shortcut.</summary>
     public bool UsesPrefetchFix => EngineOptimizations && BoostPrefetch != PrefetchFix.Off;
     /// <summary>The boost helper is started with DCS: for CPU Boost, Free VRAM before flight or the monitor mode.</summary>
-    public bool UsesBoostHelper => CpuBoost || FreeVram || UsesLowerMonitor || UsesTobiiPause;
+    public bool UsesBoostHelper => CpuBoost || FreeVram || UsesLowerMonitor || UsesTobiiPause || RecordLoad;
     /// <summary>The desktop Tobii pause is for a Pimax next to a desktop tracker, never with <see cref="Desktop"/>.</summary>
     public bool UsesTobiiPause => PauseTobiiDesktop && !Desktop;
     /// <summary>The monitor mode and the small DCS window are for the desktop mirror of a VR flight, never with
