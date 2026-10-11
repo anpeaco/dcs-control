@@ -99,7 +99,10 @@ public static class SetupDetection
         }
         if (profile.Runtime == RuntimeKind.VirtualDesktop && !profile.Desktop)
         {
-            // Quest 3: no eye tracking, no Pimax Play focus values, and Pimax's own Quad Views does not exist there.
+            // Quest 3: no eye tracking, and Pimax's own Quad Views does not exist there. A profile that followed Pimax Play
+            // gets the Quest 3's own fixed focus instead (as the interface does when the route is switched).
+            if (profile.FoveaSource == FoveaSource.PimaxPlay)
+                profile = profile with { FoveaWidth = ProfilePresets.QuestFoveaWidth, FoveaHeight = ProfilePresets.QuestFoveaHeight, PeripheralScale = ProfilePresets.QuestPeripheralScale, QuadFocusScale = 1 };
             profile = ProfileValidation.ResolveFeatures(profile with { Gaze = GazeMode.Fixed, FoveaSource = FoveaSource.Profile });
             notes.Add("Virtual Desktop sets the Quest 3's frame rate in its app on the headset, which the PC cannot read: set the same rate on the Framegen page (72, 80, 90 or 120 Hz), and set SSW to Disabled there.");
         }

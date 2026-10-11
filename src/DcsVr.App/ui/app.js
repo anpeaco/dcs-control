@@ -15,6 +15,21 @@ const pages = [
 ];
 /** Pages of the VR features, hidden in Optimizations only (no VR). */
 const VR_PAGES = ['foveation','dlss','framegen','pupil'];
+/** Quest 3 through Virtual Desktop (VDXR): frame generation and fixed-focus Quad Views only (C# VrProfile.ForLaunch). */
+const quest = p => Boolean(p) && !p.desktop && p.runtime === 'VirtualDesktop';
+/** Pages with nothing to set on a route: the VR pages with Optimizations only; DLSS 5 and pupil shift on the Quest 3 route. */
+const QUEST_HIDDEN = ['dlss','pupil'];
+const pageHidden = (p, id) => Boolean(p) && ((p.desktop && VR_PAGES.includes(id)) || (quest(p) && QUEST_HIDDEN.includes(id)));
+/** Name, profile id prefix, device line and headset software of each route (C# Routes). */
+const ROUTES = {
+  Pimax:{name:'Pimax',id:'pimax',device:'Pimax headset · Pimax Play',software:'Pimax Play'},
+  SboysSteamVr:{name:'Sboys',id:'sboys',device:'Pimax headset · SteamVR (Sboys)',software:'SteamVR'},
+  VirtualDesktop:{name:'Quest 3',id:'vd',device:'Meta Quest 3 · Virtual Desktop (VDXR)',software:'Virtual Desktop'}
+};
+const routeInfo = p => ROUTES[p.runtime] || ROUTES.Pimax;
+/** Quest 3 has no eye tracking: a wider fixed focus and a sharper periphery (C# ProfilePresets.QuestFovea*). */
+const QUEST_FOVEA = {foveaWidth:.55, foveaHeight:.5, peripheralScale:.4, quadFocusScale:1};
+const QUEST_RATES = [72,80,90,120];
 // The feature checklist in the right panel; each feature has its own page. First what every pilot can use (monitor or any
 // headset), then the VR features for Pimax (and Sboys).
 const FEATURES = [
@@ -114,9 +129,9 @@ function sync(next) {
  *  DLSS 5 building on it, so Quad Views turns it off (resolveFeatures) and hides it. */
 const foveatedSr = p => Boolean(p.foveatedDlss) && p.quadViews === 'None';
 // The DLSS row stands for any DLSS processing: DLSS 5 neural rendering or, in stereo, Foveated Super Resolution on its own.
-const featureState = p => ({engine:Boolean(p.engineOptimizations), boost:Boolean(p.cpuBoost), quad:p.quadViews !== 'None', dlss:Boolean(p.neuralRendering || foveatedSr(p)), framegen:p.frameGen !== 'Off'});
+const featureState = p => ({engine:Boolean(p.engineOptimizations), boost:Boolean(p.cpuBoost), quad:p.quadViews !== 'None', dlss:!quest(p) && Boolean(p.neuralRendering || foveatedSr(p)), framegen:p.frameGen !== 'Off'});
 /** Pimax native Quad Views exists only on the Pimax route and cannot host the focus adapter DLSS 5 needs. */
-const nativeAllowed = p => p.runtime !== 'SboysSteamVr' && !p.neuralRendering;
+const nativeAllowed = p => p.runtime === 'Pimax' && !p.neuralRendering;
 /** Cheeky without Quad Views (stereo): it clamps the focus and periphery ratios to at least 0.2. */
 const stereoCheeky = p => Boolean(p.neuralRendering || p.foveatedDlss) && p.quadViews === 'None';
 const CHEEKY_MIN = .2;
@@ -126,6 +141,8 @@ function resolveFeatures(p) {
   // Foveated Super Resolution is for stereo only (same rule as ProfileValidation.ResolveFeatures).
   if (p.quadViews !== 'None') p.foveatedDlss = false;
   const cheeky = p.neuralRendering || p.foveatedDlss;
+  // Quest 3: Pimax's own Quad Views does not exist there, and the bundled one is an option, off until chosen.
+  if (p.quadViews === 'PimaxNative' && p.runtime === 'VirtualDesktop') p.quadViews = 'None';
   // Pimax native Quad Views exists only in Pimax Play, and it cannot host the focus adapter that DLSS 5 needs.
   if (p.quadViews === 'PimaxNative' && (p.runtime === 'SboysSteamVr' || cheeky)) p.quadViews = 'QuadViewsFoveated';
   // With Quad Views, Cheeky always runs on the focus views through the adapter.
@@ -133,7 +150,7 @@ function resolveFeatures(p) {
   return p;
 }
 function setFeature(p, key, on) {
-  if (key === 'quad') p.quadViews = on ? (p.quadViews !== 'None' ? p.quadViews : lastProvider) : 'None';
+  if (key === 'quad') p.quadViews = on ? (p.quadViews !== 'None' ? p.quadViews : quest(p) ? 'QuadViewsFoveated' : lastProvider) : 'None';
   // Checking it turns DLSS 5 on unless Foveated Super Resolution already runs; unchecking turns both off.
   if (key === 'dlss') { if (!on) { p.neuralRendering = false; p.foveatedDlss = false; } else if (!p.neuralRendering && !p.foveatedDlss) p.neuralRendering = true; }
   // Without an NVIDIA RTX card, frame generation starts as FidelityFX (it runs on any graphics card).
@@ -144,20 +161,27 @@ function setFeature(p, key, on) {
 }
 /** Profile name and id follow the route and the features, e.g. "Pimax · Quad Views + DLSS 5 + Frame generation + CPU Boost". */
 function deriveIdentity(p) {
-  if (p.desktop) return {id:'desktop-optimizations',name:'Optimizations only'};  const route = p.runtime === 'SboysSteamVr' ? 'Sboys' : 'Pimax', parts = [];
+  if (p.desktop) return {id:'desktop-optimizations',name:'Optimizations only'};  const route = routeInfo(p), parts = [];
   if (p.quadViews === 'PimaxNative') parts.push(['nativeqv','Pimax Quad Views']); else if (p.quadViews !== 'None') parts.push(['qv','Quad Views']);
-  if (p.neuralRendering) parts.push(['dlss5','DLSS 5']); else if (foveatedSr(p)) parts.push(['fdlss','Foveated Super Resolution']);
+  // Not on the Quest 3 route, where DLSS 5 does not run (the profile only keeps it).
+  if (!quest(p) && p.neuralRendering) parts.push(['dlss5','DLSS 5']); else if (!quest(p) && foveatedSr(p)) parts.push(['fdlss','Foveated Super Resolution']);
   if (p.frameGen !== 'Off') parts.push(['fg','Frame generation']);
   if (p.cpuBoost) parts.push(['boost','CPU Boost']);
   if (p.engineOptimizations) parts.push(['opt','Engine Optimizations']);
-  return {id:route.toLowerCase()+'-'+(parts.length ? parts.map(x => x[0]).join('-') : 'original'), name:route+' · '+(parts.length ? parts.map(x => x[1]).join(' + ') : 'Original rendering')};
+  return {id:route.id+'-'+(parts.length ? parts.map(x => x[0]).join('-') : 'original'), name:route.name+' · '+(parts.length ? parts.map(x => x[1]).join(' + ') : 'Original rendering')};
+}
+/** Switching route keeps every feature and setting. To the Quest 3: a fixed focus (it has no eye tracking) and, unless the
+ *  profile already has focus values of its own, the Quest 3 ones instead of Pimax Play's. */
+function enterRoute(p, target) {
+  p.runtime = target; p.runtimeManifestPath = null;
+  if (target === 'VirtualDesktop') { p.gaze = 'Fixed'; if (p.foveaSource === 'PimaxPlay') Object.assign(p, QUEST_FOVEA, {foveaSource:'Profile'}); }
 }
 /** A copy of a profile with the route, focus movement and features chosen (used by the checklist and guided setup). */
 function withFeatures(source, {route, features, gaze}) {
   const p = clone(source);
   if (route === 'Desktop') p.desktop = true;
-  else if (route) { p.desktop = false; if (route !== p.runtime) { p.runtime = route; p.runtimeManifestPath = null; } }
-  if (gaze) p.gaze = gaze;
+  else if (route) { p.desktop = false; if (route !== p.runtime) enterRoute(p, route); }
+  if (gaze && !quest(p)) p.gaze = gaze;
   for (const [key] of FEATURES) setFeature(p, key, Boolean(features[key]));
   return Object.assign(p, deriveIdentity(p));
 }
@@ -171,7 +195,8 @@ function effectiveFovea(p) {
   return {w:fit(p.foveaWidth),h:fit(p.foveaHeight),focus:p.quadFocusScale,periphery:Math.max(low,p.peripheralScale),blend:p.quadEdgeBlend,pimax:false};
 }
 /** The refresh rate in use: the headset's own when it follows the headset and one was read, otherwise the profile's. */
-const refreshHz = p => p.refreshFromHeadset && state?.headsetRefresh?.hz ? state.headsetRefresh.hz : p.headsetRefreshHz;
+// Never on the Quest 3 route: Virtual Desktop's rate cannot be read, and a rate read for another route does not apply.
+const refreshHz = p => !quest(p) && p.refreshFromHeadset && state?.headsetRefresh?.hz ? state.headsetRefresh.hz : p.headsetRefreshHz;
 const PRIORITY = {Normal:'Normal priority',AboveNormal:'Above normal',High:'High priority'};
 function featureSummary(key, p) {
   if (key === 'engine') {
@@ -215,7 +240,11 @@ function featureNotes(p) {
   if (p.quadViews === 'QuadViewsFoveated' && cheeky && p.quadViewsLayerDirectory) notes.quad.push(['needs','DLSS 5 needs the bundled provider.','quadViewsLayerDirectory','Open']);
   if (pimaxSource(p) && state?.pimax && !state.pimax.found) notes.quad.push(['needs','Pimax Play values not found.','foveaSource','Open']);
   // The app keeps a verified copy of the runtime file, so it is asked for only when there is neither that copy nor a file of the profile's own.
-  if (p.neuralRendering && !p.neuralRuntimePath && !state?.savedRuntime) notes.dlss.push(['needs','Needs nvngx_dlssnr.dll.','neuralRuntimePath','Select file']);
+  if (quest(p) && p.frameGen !== 'Off') {
+    if (!QUEST_RATES.includes(Number(p.headsetRefreshHz))) notes.framegen.push(['needs','Set Virtual Desktop\'s frame rate.','questRefreshHz','Open']);
+    notes.framegen.push(['info','Turn SSW off in Virtual Desktop.']);
+  }
+  if (!quest(p) && p.neuralRendering && !p.neuralRuntimePath && !state?.savedRuntime) notes.dlss.push(['needs','Needs nvngx_dlssnr.dll.','neuralRuntimePath','Select file']);
   if ((p.cpuBoost && p.boostElevated) || (p.pauseTobiiDesktop && !p.desktop)) notes.boost.push(['info','Asks for admin rights (UAC) at launch.']);
   return notes;
 }
@@ -225,7 +254,7 @@ function renderFeatures() {
   FEATURES.forEach(([key]) => {
     const item = $('feature-'+key); item.classList.toggle('on',on[key]);
     // On a monitor or with another headset only the optimizations are features here.
-    item.hidden = Boolean(profile.desktop) && !['engine','boost'].includes(key);
+    item.hidden = (Boolean(profile.desktop) && !['engine','boost'].includes(key)) || (key === 'dlss' && quest(profile));
     if (key === 'quad') $('featureGroup-vr').hidden = Boolean(profile.desktop);
     const box = $('featureCheck-'+key); box.checked = on[key]; box.disabled = busy;
     const summary = featureSummary(key,profile); $('featureSummary-'+key).textContent = summary; $('featureSummary-'+key).title = summary;
@@ -262,7 +291,9 @@ function change() {
 /** "What happens at launch" depends only on the Boost settings and the route: refreshed for those edits, not every edit. */
 function boostChanged() { if (page === 'boost') refreshBoostPlan(); }
 // Fields the checklist and the route switch can change; other fields only change through their own input.
-const FEATURE_FIELDS = ['quadViews','neuralRendering','foveatedDlss','frameGen','cpuBoost','engineOptimizations','pauseTobiiDesktop','runtimeManifestPath'];
+const FEATURE_FIELDS = ['quadViews','neuralRendering','foveatedDlss','frameGen','cpuBoost','engineOptimizations','pauseTobiiDesktop','runtimeManifestPath',
+  // The Quest 3 route sets a fixed focus and its own focus values.
+  'gaze','foveaSource','quadFocusScale','pimaxPeripheral','pimaxHorizontalFov','pimaxVerticalFov'];
 /** Shows profile values in the fields (all, or only `paths`), never overwriting an entry the user is correcting. */
 function showProfile(paths) {
   fields.forEach(f => { if (f.path === 'dcs' || f.path === 'options' || invalid.has(f.path) || (paths && !paths.includes(f.path))) return; setFieldValue(f, profile[f.path]); });
@@ -422,12 +453,12 @@ function buildFields() {
   // Quad Views page: provider and focus movement first, then where the focus area comes from.
   let c = card('foveationControls','Foveated rendering','DCS renders a sharp focus area and a lower-resolution periphery.');
   field(c,'quadViews','Quad Views provider','Bundled works with DLSS 5 and frame generation. Pimax native uses Pimax Play\'s own Quad Views: Pimax route only, without DLSS 5.','select',[['None','Off · normal stereo'],['QuadViewsFoveated','Bundled Quad Views (recommended)'],['PimaxNative','Pimax native Quad Views']]);
-  field(c,'gaze','Focus movement','Follow your eyes, or keep the focus area centered.','select',[['EyeTracked','Eye tracked'],['Fixed','Fixed (centered)']],p => p.quadViews !== 'None');
+  field(c,'gaze','Focus movement','Follow your eyes, or keep the focus area centered.','select',[['EyeTracked','Eye tracked'],['Fixed','Fixed (centered)']],p => p.quadViews !== 'None','',quest);
   field(c,'quadTurbo','Turbo mode','DCS starts the next frame while the headset still shows the previous one. Can help when the CPU limits FPS.','toggle',null,quad);
   let more = disclosure(c,'Alternative provider','Only to test another Quad Views build.');
   field(more,'quadViewsLayerDirectory','Alternative Quad Views provider','Folder of another Quad Views build. Leave empty for the bundled one, which DLSS 5 needs.','path',null,p => p.quadViews === 'QuadViewsFoveated');
   c = card('focusControls','Focus area','Size and sharpness of the high-detail area, in Pimax Play\'s own units.');
-  field(c,'foveaSource','Focus area source','From Pimax Play\'s settings: the Quad View values set in Pimax Play, read again at every launch, on the Pimax and the Sboys route alike; nothing is written to Pimax. This profile: set them below, in Pimax Play\'s Quick units.','select',[['PimaxPlay','From Pimax Play\'s settings'],['Profile','This profile']],quad);
+  field(c,'foveaSource','Focus area source','From Pimax Play\'s settings: the Quad View values set in Pimax Play, read again at every launch, on the Pimax and the Sboys route alike; nothing is written to Pimax. This profile: set them below, in Pimax Play\'s Quick units.','select',[['PimaxPlay','From Pimax Play\'s settings'],['Profile','This profile']],quad,'',quest);
   const pimaxBox = document.createElement('div'); pimaxBox.id = 'pimaxFovea'; pimaxBox.className = 'pimax-fovea'; pimaxBox.hidden = true; c.append(pimaxBox);
   // This profile's own focus with bundled Quad Views, edited like Pimax Play's Quick sliders and converted exactly as Pimax converts them.
   const ownFocusHidden = p => p.quadViews !== 'QuadViewsFoveated' || pimaxSource(p);
@@ -487,26 +518,39 @@ function buildFields() {
   field(c,'frameGenFactor','Generated frames','Auto renders at half the refresh rate and adds a second generated frame only while DCS cannot keep up. 3× always renders a third: more latency and more artifacts in sideways motion.','select',[[0,'Auto · 2×, 3× when DCS falls behind'],[2,'2× · one generated frame'],[3,'3× · two generated frames']],p => p.frameGen !== 'Off');
   field(c,'frameGenDeepPipeline','Smoothness buffer','On: OFXR keeps one more frame in flight, which is smoother when DCS frame times vary but adds about 11 ms of latency (one refresh at 90 Hz). In 3× it takes the extra slot only when needed. Off: lower latency, more stutter when DCS frame times vary. Applies to 2×, 3× and Auto.','toggle',null,p => p.frameGen !== 'Off');
   field(c,'smoothCursor','Smooth mouse cursor','Draws the cursor at its in-between position in generated frames, so it moves at the headset\'s rate. Where you click doesn\'t change.','toggle',null,p => p.frameGen !== 'Off');
-  field(c,'nvidiaFlowScale','Optical flow resolution','Resolution used to estimate motion. Higher costs more GPU.','select',[[50,'50% · default'],[75,'75%'],[100,'100% · full']],flow);
+  field(c,'nvidiaFlowScale','Optical flow resolution','Resolution used to estimate motion, with NVIDIA and FidelityFX alike. Higher costs more GPU.','select',[[50,'50% · default'],[75,'75%'],[100,'100% · full']],p => p.frameGen !== 'Off');
   field(c,'flowPreset','Optical flow quality','More analysis costs more GPU.','select',[['Fast','Fast'],['Medium','Medium · default'],['Slow','Slow · most analysis']],flow);
   field(c,'bidirectionalFlow','Bidirectional flow','Estimate motion in both directions. Adds GPU work.','toggle',null,flow);
+  const fg = p => p.frameGen !== 'Off';
+  more = disclosure(c,'Advanced frame generation','OFXR\'s own settings, for measuring and troubleshooting. The defaults are OFXR\'s.');
+  field(more,'ofxrOwnBindingQueue','Separate submission queue','OFXR hands the headset runtime a queue of its own, so each frame waits only for its own generation. Removed missed frames on Pimax; not measured yet on Virtual Desktop, where an older OFXR was slightly slower with it. On the Quest 3, compare both.','toggle',null,fg);
+  field(more,'ofxrDisplayTimeCorrection','Display time correction','DCS predicts head poses for the refresh its frame is actually shown on. Off: for the time the runtime reports.','toggle',null,fg);
+  field(more,'ofxrAdaptiveProbe','Try 2× again in Auto','In Auto, a steady 3× tries 2× every 20 seconds to see whether DCS can hold half the refresh rate again.','toggle',null,p => fg(p) && p.frameGenFactor === 0);
+  field(more,'ofxrLateFrameSkip','Late frame skip','In 3×, a generated frame that keeps missing its refresh is replaced by the previous real frame. A last resort for 3× stutter.','toggle',null,p => fg(p) && p.frameGenFactor !== 2);
+  field(more,'ofxrVisibilityMask','Skip pixels outside the lens','Optical flow and generation skip what the lens never shows, where the headset runtime reports it.','toggle',null,fg);
+  field(more,'ofxrHistoryInPlace','Read frames in place','Generation reads DCS\'s frames where they are instead of copying them first. Saves GPU time and memory.','toggle',null,fg);
+  field(more,'ofxrLazySwapchains','Headset images on demand','The runtime\'s images for DCS\'s frames are created only when DCS shows one. Saves video memory.','toggle',null,fg);
   more = disclosure(c,'In-headset diagnostics','Status panel and its key, VRAM counter, OFXR counter and log.');
   field(more,'diagnosticOverlayKey','Diagnostic panel key','Shows or hides FPS, DLSS 5 and frame generation status in the headset, for the current flight. Click, then press the keys. Default Alt+Shift+F12.','hotkey',null,p => p.frameGen !== 'Off');
   field(more,'diagnosticOverlayAtStart','Panel visible at start','Each flight starts with the diagnostic panel shown.','toggle',null,p => p.frameGen !== 'Off');
   field(more,'diagnosticVram','VRAM counter','Adds the video memory in use to the diagnostic panel.','toggle',null,p => p.frameGen !== 'Off');
   field(more,'showOverlay','OFXR FPS counter','OFXR\'s own counter, always on. The diagnostic panel already shows FPS when you want it.','toggle',null,p => p.frameGen !== 'Off');
+  field(more,'overlayPosition','FPS counter position','Corner of the headset view the counter is drawn in.','select',[['UpperRight','Upper right · default'],['UpperLeft','Upper left'],['LowerLeft','Lower left'],['LowerRight','Lower right']],p => p.frameGen !== 'Off' && p.showOverlay);
   field(more,'diagnosticRecorder','OFXR log','Writes OFXR\'s log while flying, for troubleshooting.','toggle',null,p => p.frameGen !== 'Off');
   c = card('pacingControls','DCS frame limit','Written to DCS\'s options.lua; the original values are backed up when the profile is applied.');
   field(c,'fpsLimit','Frame limit','Match refresh: DCS renders exactly the frames the headset needs (half or a third with frame generation), so none are wasted.','select',[['Preserve','Keep the current DCS limit'],['MatchRefresh','Match refresh (recommended)'],['RuntimeHeadroom','Very high (300 FPS)'],['Custom','Custom limit']]);
-  field(c,'refreshFromHeadset','Read the refresh rate from the headset','Pimax Play: the rate the headset runs at now, or in its last session. Sboys: SteamVR\'s refresh rate. Off: set it below.','toggle');
-  field(c,'headsetRefreshHz','Headset refresh rate','Used when it is set by hand, or when the headset software has not reported one yet.','number',[50,240,.5],p => !p.refreshFromHeadset || !state?.headsetRefresh,'Hz');
+  field(c,'refreshFromHeadset','Read the refresh rate from the headset','Pimax Play: the rate the headset runs at now, or in its last session. Sboys: SteamVR\'s refresh rate. Off: set it below.','toggle',null,null,'',quest);
+  field(c,'headsetRefreshHz','Headset refresh rate','Used when it is set by hand, or when the headset software has not reported one yet.','number',[50,240,.5],p => !p.refreshFromHeadset || !state?.headsetRefresh,'Hz',quest);
+  // Virtual Desktop keeps its frame rate in the headset app, which the PC cannot read: the Quest 3 rates to choose from.
+  field(c,'questRefreshHz','Virtual Desktop frame rate','The frame rate set in the Virtual Desktop app on the headset (Streaming tab). The PC cannot read it, so set the same here: the DCS frame limit follows it.','select',QUEST_RATES.map(hz => [hz,hz+' Hz']),null,'',p => !quest(p),
+    {prop:'headsetRefreshHz',get:p => p.headsetRefreshHz,set:(p,v) => p.headsetRefreshHz = v});
   field(c,'renderedFpsCap','Custom limit','Frames DCS renders per second.','number',[30,300,.5],p => p.fpsLimit === 'Custom','FPS');
   field(c,'disableDcsVSync','Desktop VSync off','Stops VSync of the DCS window on the monitor from holding back the frame rate (graphics.sync = false). Headset sync is unaffected.','toggle');
   // CPU Boost page: started with Launch DCS, undone when DCS exits.
   c = card('boostControls','CPU Boost','Starts with Launch DCS in this app and is undone when DCS exits.');
   field(c,'cpuBoost','CPU Boost','Applies the options below to the next DCS launch.','toggle');
   field(c,'boostDcsPriority','DCS priority','Above normal suits most setups. High can starve audio, input and headset services when DCS uses every core.','select',[['Normal','Normal'],['AboveNormal','Above normal · recommended'],['High','High']],boost);
-  field(c,'boostMoveVrRuntime','Move VR runtime and headset services','Keeps Pimax or SteamVR services off the cores DCS uses for its main and render threads.','toggle',null,p => boost(p) && !p.desktop);
+  field(c,'boostMoveVrRuntime','Move VR runtime and headset services','Keeps Pimax, SteamVR or Virtual Desktop services off the cores DCS uses for its main and render threads.','toggle',null,p => boost(p) && !p.desktop);
   field(c,'boostMoveBackgroundApps','Move background apps','Moves the apps below to the slowest cores at below-normal priority while DCS runs.','toggle',null,boost);
   field(c,'boostBackgroundApps','Background apps','Process names, one per line, without .exe.','list',null,p => boost(p) && p.boostMoveBackgroundApps);
   field(c,'boostElevated','Administrator rights','Asks once (UAC) when DCS starts, so services running under other accounts can be moved too. DCS still starts as your user. Without it those services are left as they are.','toggle',null,boost);
@@ -560,7 +604,7 @@ function buildFields() {
   field(c,'pupilShiftEyeRadiusMm','Eye rotation radius','From the pupil to the point the eye turns around. About 10 to 11 mm for most people; more makes the shift larger.','number',[5,15,.5],pupil,'mm');
   field(c,'pupilShiftVirtualImageM','Lens image distance','How far away the lens shows the image. Pimax does not publish it; 1 to 2 m is typical. It changes only distant objects, by less than 0.1 degree.','number',[.5,5,.1],pupil,'m');
   field(c,'pupilShiftToggleKey','In-flight switch','Turns the correction off and back on in flight, to compare: a low beep off, a high beep on. Click, then press the keys. Default Ctrl+Shift+F10.','hotkey',null,pupil);
-  c = card('headsetControls','Headset runtime','Uses the headset software chosen under How you fly in the right panel (Pimax Play or SteamVR).');
+  c = card('headsetControls','Headset runtime','Uses the headset software chosen under How you fly in the right panel (Pimax Play, SteamVR or Virtual Desktop).');
   more = disclosure(c,'Runtime override','Only for a runtime that is not registered.');
   field(more,'runtimeManifestPath','OpenXR runtime file','An OpenXR runtime JSON to use instead of the route\'s registered runtime. Leave empty normally. Not used with Optimizations only.','path',null,p => !p.desktop);
 }
@@ -575,7 +619,7 @@ function buildFeatureList() {
 }
 function navigate(id) {
   // The VR pages are hidden with Optimizations only: whatever leads there (Ctrl+number, a link, search) opens the overview.
-  if (profile?.desktop && VR_PAGES.includes(id)) id = 'overview';
+  if (pageHidden(profile, id)) id = 'overview';
   const entry = pages.find(p => p[0] === id); if (!entry) return; page = id;
   pages.forEach(p => { $('page-'+p[0]).hidden = p[0] !== id; $('nav-'+p[0]).classList.toggle('selected',p[0] === id); $('nav-'+p[0]).setAttribute('aria-current',p[0] === id ? 'page' : 'false'); });
   $('pageTitle').textContent = entry[1]; $('pageDescription').textContent = id === 'dlss' && profile && profile.quadViews !== 'None' ? 'DLSS 5 neural rendering on the Quad Views focus area.' : entry[2]; $('scrollArea').scrollTop = 0;
@@ -779,7 +823,7 @@ function updateControls() {
   fields.forEach(f => { const inactive = Boolean(f.condition && !f.condition(profile)); f.element.classList.toggle('inactive',inactive); f.input.disabled = busy || inactive; if (f.range) f.range.disabled = busy || inactive; f.element.hidden = Boolean(f.hide && f.hide(profile)); });
   // Pimax native exists only on the Pimax route and cannot host the focus adapter DLSS needs.
   const native = $('input-quadViews').querySelector('[value=PimaxNative]'); native.disabled = !nativeAllowed(profile);
-  native.textContent = 'Pimax native Quad Views' + (profile.runtime === 'SboysSteamVr' ? ' · Pimax route only' : native.disabled ? ' · not with DLSS 5' : '');
+  native.textContent = 'Pimax native Quad Views' + (profile.runtime !== 'Pimax' ? ' · Pimax route only' : native.disabled ? ' · not with DLSS 5' : '');
   // Foveated Super Resolution is a stereo option: its card is gone while Quad Views is on.
   $('foveatedDlssControls').hidden = profile.quadViews !== 'None';
   // Stereo Cheeky clamps these ratios to 0.2 or more: say which value is written when the field holds less.
@@ -817,8 +861,8 @@ function updateControls() {
   const names = {engine:'Engine Optimizations',boost:'CPU Boost',foveation:'Quad Views',dlss:'DLSS 5',framegen:'Frame generation'};
   const tile = ([target,label,active,title,detail]) => { if (!active) { title = names[target] || title; detail = String(detail).replace(/^Off · /,''); } return `<button type="button" class="stage ${active ? 'on' : 'off'}" data-page="${target}" aria-label="${escape(title)}: ${active ? 'on' : 'off'}. Open settings"><span>${label}<em>${active ? 'ON' : 'OFF'}</em></span><b>${escape(title)}</b><small>${escape(detail)}</small></button>`; };
   const group = (label, list) => `<div class="stage-group"><div class="stage-group-label">${label}</div><div class="stage-row${list.length === 2 ? ' two' : ''}">${list.map(tile).join('')}</div></div>`;
-  const everyone = tiles.filter(([target]) => !VR_PAGES.includes(target)), vr = tiles.filter(([target]) => VR_PAGES.includes(target));
-  $('pipeline').innerHTML = group('For every pilot · monitor or any headset', everyone) + (profile.desktop ? '' : group('VR · ' + (profile.runtime === 'SboysSteamVr' ? 'Sboys' : 'Pimax'), vr));
+  const everyone = tiles.filter(([target]) => !VR_PAGES.includes(target)), vr = tiles.filter(([target]) => VR_PAGES.includes(target) && !pageHidden(profile, target));
+  $('pipeline').innerHTML = group('For every pilot · monitor or any headset', everyone) + (profile.desktop ? '' : group('VR · ' + routeInfo(profile).name, vr));
   // What DLSS 5 still needs, on its own page; everything else to fix is listed once, in Checks.
   const notes = featureNotes(profile);
   $('dlssMissing').innerHTML = notes.dlss.filter(n => n[0] === 'needs').map(() => `<div class="needs"><span>DLSS 5 needs your nvngx_dlssnr.dll runtime file.</span></div>`).join('');
@@ -839,9 +883,9 @@ function updateControls() {
   $('routeLive').textContent = profile.desktop ? 'Another headset or a monitor: DCS runs as you set it up, with Engine Optimizations, CPU Boost and Free VRAM.' : state?.activeRoute?.summary || '';
   $('routeLive').classList.toggle('mismatch', !profile.desktop && Boolean(live) && live !== profile.runtime);
   // The VR feature pages are hidden without a headset; an open one goes back to the overview.
-  VR_PAGES.forEach(id => $('nav-'+id).hidden = Boolean(profile.desktop));
-  $('panelDevice').textContent = profile.desktop ? 'Any headset, or the monitor' : profile.runtime === 'SboysSteamVr' ? 'Pimax headset · SteamVR (Sboys)' : 'Pimax headset · Pimax Play';
-  if (profile.desktop && VR_PAGES.includes(page)) navigate('overview');
+  VR_PAGES.forEach(id => $('nav-'+id).hidden = pageHidden(profile, id));
+  $('panelDevice').textContent = profile.desktop ? 'Any headset, or the monitor' : routeInfo(profile).device;
+  if (pageHidden(profile, page)) navigate('overview');
   // The Sboys driver is only needed on the Sboys route.
   $('sboysCard').hidden = profile.runtime !== 'SboysSteamVr' || Boolean(profile.desktop);
   $('headsetControls').hidden = Boolean(profile.desktop);
@@ -861,7 +905,7 @@ function renderCadence() {
   const metrics = [
     ['DCS NEEDS TO RENDER',n(target)+' FPS',fg ? (profile.frameGenFactor === 0 ? 'Half the refresh rate; a third while DCS falls behind.' : multiplier === 3 ? 'A third of the refresh rate.' : 'Half the refresh rate.') : 'The full refresh rate; frame generation is off.'],
     ['DCS FRAME LIMIT',cap === null ? 'Not set' : n(cap)+' FPS',profile.fpsLimit === 'Preserve' ? (cap === null ? 'No limit found in options.lua; left as it is.' : 'Found in options.lua; left as it is.') : 'Written to options.lua when the profile is applied.'],
-    ['HEADSET',n(hz)+' Hz' + (profile.refreshFromHeadset && state?.headsetRefresh ? ' · '+state.headsetRefresh.source : ''),fg ? `Up to ${n(cap === null ? hz : Math.min(hz,cap*multiplier))} FPS with generated frames.` : 'Set this refresh rate in Pimax Play or SteamVR.']
+    ['HEADSET',n(hz)+' Hz' + (!quest(profile) && profile.refreshFromHeadset && state?.headsetRefresh ? ' · '+state.headsetRefresh.source : ''),fg ? `Up to ${n(cap === null ? hz : Math.min(hz,cap*multiplier))} FPS with generated frames.` : `Set this refresh rate in ${routeInfo(profile).software}.`]
   ];
   $('cadenceMetrics').innerHTML = metrics.map(b => `<div class="budget"><span>${b[0]}</span><strong>${b[1]}</strong><p>${b[2]}</p></div>`).join('');
   const warnings = [];
@@ -928,7 +972,7 @@ const CHECK_INFO = {
   'framegen-factor':['Generated frames',{reveal:'frameGenFactor',label:'Open'}], 'flow-preset':['Optical flow',{reveal:'flowPreset',label:'Open'}], 'flow-scale':['Optical flow',{reveal:'nvidiaFlowScale',label:'Open'}],
   'fps-mode':['DCS frame limit',{reveal:'fpsLimit',label:'Open'}], 'fps-under-target':['DCS frame limit',{reveal:'fpsLimit',label:'Open'}],
   'refresh-rate':['Refresh rate',{reveal:'refreshFromHeadset',label:'Open'}], 'external-limiters':['Other FPS limits',null], 'runtime-reprojection':['Motion smoothing',null],
-  'route-mismatch':['Headset route',{page:'setup',label:'Open'}], 'steamvr-not-found':['SteamVR',{guide:'steamvr',label:'Guide'}], 'vdxr-not-found':['Virtual Desktop',{guide:'virtualdesktop',label:'Guide'}],
+  'route-mismatch':['Headset route',{page:'setup',label:'Open'}], 'steamvr-not-found':['SteamVR',{guide:'steamvr',label:'Guide'}], 'vdxr-not-found':['Virtual Desktop',{guide:'virtualdesktop',label:'Guide'}], 'quest-refresh':['Refresh rate',{reveal:'questRefreshHz',label:'Open'}], 'quest-fixed-focus':['Fixed focus',{reveal:'quadViews',label:'Open'}], 'overlay-position':['FPS counter',{reveal:'overlayPosition',label:'Open'}],
   'gaze-bridge-missing':['Eye tracking on Sboys',{guide:'gaze',label:'Guide'}], 'runtime':['OpenXR runtime',{page:'setup',label:'Open'}],
   'active-backup':['Applied profile',{page:'recovery',label:'Stock DCS'}], 'deployment':['Files and components',{page:'diagnostics',label:'Review',review:true}],
   'write-access':['Write access to game folders',{action:'grantWriteAccess',label:'Grant access'}], 'write-blocked':['Write access to game folders',null],
@@ -1069,7 +1113,7 @@ function renderSearch() {
     ['support','DLSS 5 not applied','Why DLSS 5 did not reach the focus area in the last session.','dlssFocus'],
     ['recovery','Stock DCS','Back to stock DCS: put back every file and setting DCS Control changed.','originals']
   ].map(([page,title,description,id]) => ({page,title,description,path:id,element:$(id),input:$(id)}));
-  searchResults = [...fields,...shortcuts].filter(f => !(profile?.desktop && VR_PAGES.includes(f.page))).filter(f => !query || normalize(f.title+' '+f.description+' '+f.path+' '+pages.find(p => p[0] === f.page).slice(1,4).join(' ')).includes(query));
+  searchResults = [...fields,...shortcuts].filter(f => !pageHidden(profile, f.page)).filter(f => !query || normalize(f.title+' '+f.description+' '+f.path+' '+pages.find(p => p[0] === f.page).slice(1,4).join(' ')).includes(query));
   $('searchResults').innerHTML = searchResults.length ? searchResults.map((f,index) => `<button class="search-result" data-index="${index}"><div><b>${escape(f.title)}</b><small>${escape(f.description)}</small></div><span>${f.path === 'featureList' ? 'Right panel' : pages.find(p => p[0] === f.page)[1]} ›</span></button>`).join('') : '<div class="empty-state"><p>No settings match this search.</p></div>';
   $('searchResults').querySelectorAll('button').forEach(b => b.addEventListener('click',() => revealSetting(searchResults[Number(b.dataset.index)])));
 }
@@ -1243,7 +1287,7 @@ function adoptDraft(next) {
   showProfile(); change(); boostChanged();
 }
 // Test hooks exercise the same controls and command bridge; the fixture host never starts DCS or opens dialogs.
-window.dcsUi = {request,run,checkUpdates,installUpdate,setUpdateChecks,notesFragment,get updates(){return updates;},saveRuntime,forgetRuntime,adoptDraft,launchState,checkItems,loadFlight,resetToApplied,parseKey,keyLabel,get flight(){return flight;},get savedDraft(){return savedDraftJson;},refreshWorkflow:() => { renderOriginals(); updateWorkflow(); },navigate,draft,sync,showProfile,invalidate:change,fields,withFeatures,featureState,featureNotes,featureSummary,deriveIdentity,FEATURES,rereadPimax,refreshBoostPlan,renderBoostPlan,matchesApplied,effectiveFovea,get boostRequests(){return boostSequence;},get profile(){return profile;},get plan(){return plan;},get invalid(){return invalid;},get state(){return state;}};
+window.dcsUi = {quest,request,run,checkUpdates,installUpdate,setUpdateChecks,notesFragment,get updates(){return updates;},saveRuntime,forgetRuntime,adoptDraft,launchState,checkItems,loadFlight,resetToApplied,parseKey,keyLabel,get flight(){return flight;},get savedDraft(){return savedDraftJson;},refreshWorkflow:() => { renderOriginals(); updateWorkflow(); },navigate,draft,sync,showProfile,invalidate:change,fields,withFeatures,featureState,featureNotes,featureSummary,deriveIdentity,FEATURES,rereadPimax,refreshBoostPlan,renderBoostPlan,matchesApplied,effectiveFovea,get boostRequests(){return boostSequence;},get profile(){return profile;},get plan(){return plan;},get invalid(){return invalid;},get state(){return state;}};
 document.addEventListener('click', e => { const stage = e.target.closest('.stage[data-page], [data-open-page]'); if (stage && !busy) navigate(stage.dataset.page || stage.dataset.openPage); });
 document.addEventListener('click', e => {
   const link = e.target.closest('[data-reveal]'); if (!link || busy) return;
@@ -1262,8 +1306,9 @@ document.addEventListener('click', e => {
   } else {
     if (!profile.desktop && target === profile.runtime) return;
     profile.desktop = false;
-    // Switching route keeps every feature and setting; Pimax native Quad Views becomes the bundled provider on Sboys.
-    if (target !== profile.runtime) { profile.runtime = target; profile.runtimeManifestPath = null; }
+    // Switching route keeps every feature and setting; Pimax native Quad Views becomes the bundled provider on Sboys and
+    // off on the Quest 3, which also gets a fixed focus.
+    if (target !== profile.runtime) enterRoute(profile, target);
   }
   resolveFeatures(profile); Object.assign(profile, deriveIdentity(profile));
   change(); boostChanged();

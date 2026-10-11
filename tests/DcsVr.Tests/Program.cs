@@ -2871,7 +2871,9 @@ Test("Detect my setup: a running Virtual Desktop Streamer proposes the Quest 3 r
     Require(SetupDetection.DetectActiveRoute(vd).Route == RuntimeKind.VirtualDesktop);
     var result = SetupDetection.Detect(ProfilePresets.All.Single(x => x.Id == "pimax-combined"), new(), vd);
     Require(result.Profile is { Runtime: RuntimeKind.VirtualDesktop, Gaze: GazeMode.Fixed, FoveaSource: FoveaSource.Profile, Desktop: false } && result.Detected.Any(d => d.Value.StartsWith("Quest 3")));
-    Require(result.Profile.FoveaWidth == new VrProfile().FoveaWidth && !result.Detected.Any(d => d.Field.StartsWith("pimax:")), "Pimax Play's focus values are not read");
+    Require(result.Profile is { FoveaWidth: ProfilePresets.QuestFoveaWidth, FoveaHeight: ProfilePresets.QuestFoveaHeight, PeripheralScale: ProfilePresets.QuestPeripheralScale, QuadFocusScale: 1 } && !result.Detected.Any(d => d.Field.StartsWith("pimax:")), "Pimax Play's focus values are not read; the Quest 3's fixed focus replaces them");
+    var own = SetupDetection.Detect(ProfilePresets.All.Single(x => x.Id == "pimax-combined") with { FoveaSource = FoveaSource.Profile, FoveaWidth = .7 }, new(), vd).Profile;
+    Require(own.FoveaWidth == .7, "a profile with its own focus values keeps them");
     Require(!result.Notes.Any(n => n.Contains("nvngx_dlssnr")) && result.Notes.Any(n => n.Contains("SSW")), "no DLSS 5 file is looked for; the frame rate and SSW are pointed out");
     // SteamVR running Sboys is still Sboys, even with the Streamer open; SteamVR running another headset beside the Streamer is the Quest.
     var sboysLog = Make("quest-detect/vrserver.txt", "Active HMD set to CustomHeadsetOpenVR.PimaxSlamCustomHMD\n");
