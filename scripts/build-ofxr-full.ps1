@@ -18,12 +18,12 @@ $originalPlatform = 'set(CMAKE_GENERATOR_PLATFORM "x64" CACHE STRING "" FORCE)'
 $ninjaPlatform = @'
 if(CMAKE_GENERATOR STREQUAL "Ninja")
         set(CMAKE_GENERATOR_PLATFORM "" CACHE STRING "" FORCE)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /machine:x64")
+        string(STRIP "${CMAKE_EXE_LINKER_FLAGS} /machine:x64" CMAKE_EXE_LINKER_FLAGS)
     else()
         set(CMAKE_GENERATOR_PLATFORM "x64" CACHE STRING "" FORCE)
     endif()
 '@
-if (-not $toolchainText.Contains('/machine:x64")')) {
+if (-not $toolchainText.Contains('/machine:x64')) {
     if (-not $toolchainText.Contains($originalPlatform)) { throw 'Pinned SDK toolchain layout changed.' }
     [IO.File]::WriteAllText($toolchainPath, $toolchainText.Replace($originalPlatform, $ninjaPlatform))
 }

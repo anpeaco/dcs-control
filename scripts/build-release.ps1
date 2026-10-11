@@ -2,6 +2,7 @@
 # warns and leaves the setup and ZIP unsigned).
 param([switch]$NoRestore, [switch]$Sign)
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem  # Windows PowerShell 5.1 does not load ZipFile by default.
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1'

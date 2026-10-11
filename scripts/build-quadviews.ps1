@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem  # Windows PowerShell 5.1 does not load ZipFile by default.
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $quadRoot = Join-Path $workspaceRoot 'external/quadviews'
 if (-not (Test-Path -LiteralPath $quadRoot)) {

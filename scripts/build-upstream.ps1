@@ -19,7 +19,8 @@ $testOptions = @('--test-dir',$nativeBuild,'--output-on-failure','--parallel','2
 # explicitly requested verification without desktop interaction.
 if ($Component -eq 'cheeky') {
     # Mixed WARP calibration is slow under concurrent GPU tests on this host.
-    $testOptions += @('-E','([Oo]verlay|MixedCalibration)')
+    # ctest runs through msvc.cmd: cmd /c and the batch's %* each parse the line once, so | needs ^^^|.
+    $testOptions += @('-E','([Oo]verlay^^^|MixedCalibration)')
     $testFile = Join-Path $nativeBuild 'CTestTestfile.cmake'
     $testText = [IO.File]::ReadAllText($testFile).Replace('CheekyMixedCalibrationTests]=] PROPERTIES  TIMEOUT "60"', 'CheekyMixedCalibrationTests]=] PROPERTIES  TIMEOUT "300"')
     [IO.File]::WriteAllText($testFile, $testText)
