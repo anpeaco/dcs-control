@@ -292,6 +292,22 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
         var running = Process.GetProcessesByName("DCS");
         try { return running.Length > 0; } finally { foreach (var process in running) process.Dispose(); }
     }
+    /// <summary>Ends every DCS.exe and waits up to 10 s for each to exit. A DCS started as administrator cannot be ended
+    /// from here: Windows refuses, and the status says so.</summary>
+    private static string ForceCloseDcs()
+    {
+        var running = Process.GetProcessesByName("DCS");
+        if (running.Length == 0) return "DCS was not running.";
+        int refused = 0, stuck = 0;
+        foreach (var process in running)
+            using (process)
+                try { process.Kill(); if (!process.WaitForExit(10000)) stuck++; }
+                catch (InvalidOperationException) { } // exited on its own meanwhile
+                catch (System.ComponentModel.Win32Exception) { refused++; }
+        return refused > 0 ? "Windows refused to close DCS; it may run as administrator. Close it from Task Manager."
+            : stuck > 0 ? "DCS was told to close but is still shutting down."
+            : "DCS was force closed. The mission and any settings changed in DCS since it started were not saved.";
+    }
     private readonly Lock _boostCacheLock = new();
     private (DateTime At, string Key, object Reply)? _boostCache;
     /// <summary>"What Boost will do" is read-only and slow (it inspects running processes and the DCS log), so it is
@@ -524,6 +540,9 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
                     var (launched, dcsProcess) = await WithWriteAccess(() => service.SyncAndLaunch(_profile, CurrentInventory), () => LaunchSafety.ProfileFolders(_profile, CurrentInventory));
                     dcsProcess.Dispose();
                     _status = LaunchStatus(launched, "DCS launched."); _report = SyncReport(launched); break;
+                case "forceCloseDcs":
+                    // DCS hung or will not quit: ended at once, as a crash would; CPU Boost undoes its changes when DCS exits.
+                    EnsureInteractive(); _status = await Task.Run(ForceCloseDcs); break;
                 case "launchCheck":
                     var start = await Task.Run(service.PrepareLaunchApplied); _report = "Launch contract verified: " + start.FileName; break;
                 case "resetNeural": _profile = RenoSettings.ResetAdvanced(_profile); Invalidate(); _status = "Advanced DLSS 5 image controls reset to their defaults."; break;

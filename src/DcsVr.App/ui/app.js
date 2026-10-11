@@ -94,7 +94,7 @@ function setBusy(value) {
   document.querySelectorAll('#pages button, #pages input, #pages select, #pages textarea, .panel-top button, .panel-top input').forEach(el => { if (value) { el.dataset.wasDisabled = String(el.disabled); el.disabled = true; } else if (el.dataset.wasDisabled) { el.disabled = el.dataset.wasDisabled === 'true'; delete el.dataset.wasDisabled; } });
   ['importProfile','saveProfile'].forEach(id => $(id).disabled = value); updateWorkflow();
 }
-const WORKING = {launch:'Bringing the profile up to date and starting DCS…', apply:'Applying the profile without launching…', preview:'Listing the files Launch DCS writes…', restore:'Putting the original files back…'};
+const WORKING = {launch:'Bringing the profile up to date and starting DCS…', apply:'Applying the profile without launching…', preview:'Listing the files Launch DCS writes…', restore:'Putting the original files back…', forceCloseDcs:'Closing DCS…'};
 async function run(action, extras = {}) {
   if (invalid.size && ['preview','apply','launch','save','resetNeural','export','checkReadiness'].includes(action)) { const error = new Error('Correct the marked numeric values first.'); showError(error); throw error; }
   // A second click while a command runs is ignored: Launch and Apply never run twice.
@@ -938,6 +938,7 @@ function updateWorkflow() {
   $('apply').disabled = blocked || (mode === 'ready' && !state.foveaChanged);
   $('reviewPlan').disabled = busy || hasInvalid || !profile;
   $('openRecovery').hidden = !state?.originals?.count; $('openRecovery').disabled = busy || mode === 'running';
+  $('forceCloseDcs').hidden = !state?.dcsRunning; $('forceCloseDcs').disabled = busy;
   $('saveProfile').disabled = busy || hasInvalid;
   const error = $('statusDot').classList.contains('error');
   $('statusTitle').textContent = busy ? 'Working' : hasInvalid ? 'Check numeric values' : error ? 'Needs attention'
@@ -1260,6 +1261,11 @@ async function initialize() {
     if (profile.keepOtherDxgi !== keep) { profile.keepOtherDxgi = keep; showProfile(['keepOtherDxgi']); change(); }
     const action = pendingDxgiAction; pendingDxgiAction = null; if (action) run(action).catch(()=>{});
   };
+  // Force close asks first: DCS ends as if it had crashed.
+  $('forceCloseDcs').addEventListener('click',() => $('forceCloseDialog').showModal());
+  $('cancelForceClose').addEventListener('click',() => $('forceCloseDialog').close());
+  $('confirmForceClose').addEventListener('click',() => { $('forceCloseDialog').close();
+    run('forceCloseDcs').then(() => { renderDashboard(); loadFlight(state.dcsRunning ? 0 : 3000); }).catch(()=>{}); });
   $('confirmDxgi').addEventListener('click',() => decideDxgi(true));
   $('asideDxgi').addEventListener('click',() => decideDxgi(false));
   [['launch','launch'],['apply','apply'],['refresh','refresh'],['importProfile','import'],['saveProfile','save'],['resetNeural','resetNeural'],['export','export'],['prepareSboys','prepareSboys'],['importSboys','importSboys'],['openSboys','openSboys'],['checkReadiness','checkReadiness']].forEach(([id,action]) => $(id).addEventListener('click',() => run(action).catch(()=>{})));

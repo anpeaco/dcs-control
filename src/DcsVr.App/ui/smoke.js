@@ -257,7 +257,10 @@ window.runWebSmoke = async function() {
       // DCS running (reported by the 4 s poll): Launch, Apply and Restore lock.
       ui.state.dcsRunning = true; ui.refreshWorkflow();
       check(route+' while DCS runs Launch, Apply and Restore are locked',$('statusTitle').textContent === 'DCS is running' && $('launch').disabled && $('apply').disabled && $('openRecovery').disabled && $('restoreOriginals').disabled);
-      ui.state.dcsRunning = false; ui.refreshWorkflow(); check(route+' Launch unlocks when DCS closes',!$('launch').disabled && $('statusTitle').textContent === 'Ready to fly');
+      check(route+' while DCS runs Force close DCS is offered',!$('forceCloseDcs').hidden && !$('forceCloseDcs').disabled);
+      $('forceCloseDcs').click(); check(route+' Force close DCS asks first',$('forceCloseDialog').open);
+      $('cancelForceClose').click(); check(route+' cancelling Force close leaves DCS running',!$('forceCloseDialog').open && ui.state.dcsRunning);
+      ui.state.dcsRunning = false; ui.refreshWorkflow(); check(route+' Launch unlocks when DCS closes',!$('launch').disabled && $('statusTitle').textContent === 'Ready to fly' && $('forceCloseDcs').hidden);
       $('openRecovery').click(); check('Back to stock DCS opens Recovery',!$('page-recovery').hidden);
       $('restoreOriginals').click(); await waitIdle(); check(route+' Back to stock DCS recovered every original file',!ui.state.launchReady && ui.state.originals.count === 0 && $('openRecovery').hidden && $('originals').textContent.includes('No changes to put back'));
     }
