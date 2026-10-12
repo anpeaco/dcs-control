@@ -33,11 +33,11 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` (8e10a49) | CPU Boost → **Record CPU and GPU use** off to compare | Not flown |
 | S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft, not in git) | Framegen → Advanced → **Late frame skip** | Not flown |
 | M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card (8e10a49) | measurement only | Not flown |
-| S10 | Synthesis waits on the GPU for the hand-over copy of a staging texture before writing it again (R7) | OFXR fork patch 0023 | none (ordering fix) | Not flown |
-| S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 | Framegen → Advanced → **Headset queue at high priority** | Not flown |
-| S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 | none | Not flown |
-| S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` | none (correctness) | Tested offline |
-| M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 | measurement only | Checked on the baseline log |
+| S10 | Synthesis waits on the GPU for the hand-over copy of a staging texture before writing it again (R7) | OFXR fork patch 0023 (d93c5e2) | none (ordering fix) | Not flown |
+| S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 (d93c5e2) | Framegen → Advanced → **Headset queue at high priority** | Not flown |
+| S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 (d93c5e2) | none | Not flown |
+| S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` (d93c5e2) | none (correctness) | Tested offline |
+| M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Checked on the baseline log |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
