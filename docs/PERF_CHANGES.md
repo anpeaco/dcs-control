@@ -171,6 +171,23 @@ Counts over the flying seconds: headset images made (result 9) and given back (1
 | Engine module: 28 recorder threads at normal priority, recorder waits, the shadow instancing lock across CreateVertexShader, texture-table rebuild bursts, the 512 KB `partw` scan, dcs.log re-read every 2 s | Not seen in a flight yet; for the full review. |
 | OFXR's transient refusals that block DCS in `wait_for_presenter_submission`, unbounded hand-over swapchain waits, two pacing clocks on Virtual Desktop | For the full review, with logs from the new build. |
 
+## System: outside DCS Control (12 October 2026)
+
+What this PC had when read on 12 October (read only; nothing changed). Each is a candidate for one A/B pair under the protocol above; the pilot makes the change, and the result goes in Status.
+
+| ID | Item | Found | Candidate change | Check | Status |
+| --- | --- | --- | --- | --- | --- |
+| X1 | Memory Integrity (HVCI) and virtualization-based security | On | Off (Windows Security → Device security → Core isolation; reboot). A security trade-off: the pilot's decision | Late frames/min; Limited by (CPU ms per frame) | Not tried |
+| X2 | Programs running beside DCS | Chrome ×35, Discord ×6, Edge ×6, Google Drive, Razer Synapse ×6, NordVPN service | Close before flight, or add to CPU Boost → Free VRAM before flight; VPN disconnected or excluding the local network | PC during flight (other CPU/GPU users); Late frames/min | Not tried |
+| X3 | Defender real-time scanning of DCS's streamed files | On; exclusions unknown (need admin to read) | Exclude the DCS install, Saved Games\DCS.openbeta and %LOCALAPPDATA%\DcsControl | Late frames/min in low flight over terrain; PC during flight (MsMpEng) | Not tried |
+| X4 | NVIDIA power management for DCS | Unknown (control panel) | Prefer maximum performance; shader cache 10 GB or unlimited | Limited by (GPU ms p90); PC during flight (GPU clock) | Not tried |
+| X5 | DCS visibility range | Extreme | High | Late frames/min; Limited by (CPU ms) | Not tried |
+| X6 | DCS shadows / clutter distance | 4 / 1000 | One step lower each (separate pairs) | Late frames/min; Limited by | Not tried |
+| X7 | DCS preload radius | 150000 (maximum) | Keep: with 64 GB it prevents terrain-loading hitches | — | Kept |
+| X8 | Hardware-accelerated GPU scheduling | Off | On (optional; reboot) | Late frames/min; Missed refreshes/min | Not tried |
+| X9 | Network to the headset | PC wired at 1 Gbps; Virtual Desktop H.264+, automatic bitrate off | 5/6 GHz Wi-Fi with the headset alone on it if possible | Virtual Desktop overlay (network latency) screenshots; OVR Metrics Tool CSV on the Quest | Not checked |
+| X10 | Driver latency (DPC/ISR) | Not measured | LatencyMon for 10 minutes with DCS running | LatencyMon report | Not checked |
+
 ## Review findings (12 October 2026)
 
 A fresh read-only review of OFXR (frame path; GPU and resources), the engine module, DCS Control and the performance metrics, after the changes above. Ranked by expected effect on what is seen in the headset; **Open** until acted on.
