@@ -44,7 +44,7 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | One run per side on the perf-test mission (14:16 Very high, 15:19 Match refresh): Very high better at the headset (missed refreshes 16.6 against 23.3/min, 13.8 against 19.3 without Virtual Desktop's display-time corrections (R20, M6), 406 0.3 against 5.7/s, no limiter beat); Last flight's late-frame count favours Match refresh (see the 15:19 section for why). Leaning Very high; a second run per side still to fly. Draft is now on Very high at 90 Hz 3× (15:36) |
 | M4 | Perf-test mission times its scripts: every scheduled function and event handler call is bracketed by `PERFT>n name` / `PERFT<n` lines in dcs.log (the mission environment has no clock) | `scripts/make-perf-mission.py`, test `scripts/test-perf-mission-timing.py` | `--no-timing` rebuilds the mission without it (byte for byte the previous one) | Flown 12 Oct 15:19: 2,099 calls timed; RadioVoice and Civilianai calls of 27-45 ms behind several late frames |
 | M5 | Late-frame report across OFXR's log, dcs.log (with M4's timings), the flight monitor and an optional WPR trace: each late frame split along DCS's main and render threads | `scripts/analyze-flight-spikes.py`, `tools/FlightTrace` (TraceProcessor), `scripts/record-flight-trace.ps1` | measurement only | Report checked on the 13:37, 14:16 and 15:19 logs; it times late frames from xrWaitFrame entries, Last flight from returns (the counts differ under Match refresh); trace analysis tested only up to loading a trace (needs a recorded CPU trace) |
-| M7 | Last flight: a dip of up to 3 s under the steady rate (each second still 10 frames or more) between steady seconds stays in steady flight, so freezes are counted (R22); **Freezes** row (frames of 100 ms or more, the longest); Hitch signals counts the headset runtime's xrEndFrame over 30 ms (R19); the engine switch is compared only within the mission load it was used in, other loads' seconds reported as left out (R23) | `LastFlight.cs`, `app.js` (uncommitted) | measurement only | Re-read 17:36 (both missions): steady 717 → 852 s, late 24.1 → 23.7/min, missed 24.2 → 67/min, 38 freezes (longest 628 ms), 67 runtime blocks. Needs the app rebuilt and installed |
+| M7 | Last flight: a dip of up to 3 s under the steady rate (each second still 10 frames or more) between steady seconds stays in steady flight, so freezes are counted (R22); **Freezes** row (frames of 100 ms or more, the longest); Hitch signals counts the headset runtime's xrEndFrame over 30 ms (R19); the engine switch is compared only within the mission load it was used in, other loads' seconds reported as left out (R23) | `LastFlight.cs`, `app.js` (uncommitted) | measurement only | Re-read 17:36 (both missions): steady 717 → 852 s, late 24.1 → 23.7/min, missed 24.2 → 67/min, 38 freezes (longest 628 ms), 67 runtime blocks. Installed and flown 18:17: Freezes and runtime blocks counted the one freeze in the log, but the row also counts frames after the mission ended; the engine card was empty because OFXR's log had wrapped (R24) |
 | M6 | Last flight: a frame is late past a quarter of its slot in 2× and 3× alike (as M5 counts), then split by refreshes; display-time steps under two refreshes and off the refresh grid by more than 0.15 counted as **display-time corrections**, not missed or doubled (R20); seconds out of FOCUSED are not flying (Rendered FPS, load) (R21) | `LastFlight.cs`, `app.js` (Missed refreshes row) | measurement only | Re-read: 2× late counts unchanged (14:16 59, 15:19 36); 15:36 late 77 → 40, missed 58 → 41, doubled 12 → 2, Rendered FPS 34.2 → 29.6; 14:16 missed 48 → 40, 15:19 75 → 62 |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
@@ -319,6 +319,49 @@ What the logs show:
 
 Next flight: restart DCS, load only the perf-test mission, and switch Engine Optimizations **off from the start** (or on and off every 60 s: on, off, off, on). If the 240 ms freezes come back early in the mission with them off, and not with them on, the switch is the cause; then switch the parts one at a time, texture dedupe first. Last flight's **Freezes** row and the runtime's long frame calls in Hitch signals (M7) count them; the engine card compares within the mission load only.
 
+## Flight 12 October 2026 18:17 (Engine Optimizations off twice, early in the mission)
+
+Same build and profile as 17:36 (90 Hz, 3×, Very high), with M7 installed. Again one DCS session and two missions, not restarted between them, so the conditions match 17:36: `FLIR_AB_Test_Night.miz` (18:19:05-18:24:28, on), then the perf-test mission (18:24:41-18:48:21, about 23.7 minutes, the longest run of it yet). Engine Optimizations switched **off twice**: 18:25:49-18:26:11 (22 s, mission time 68-90 s) and 18:27:52-18:28:20 (28 s, 191-219 s); `DcsQvCull.log` confirms both (boost, slabs, texture dedupe, task-queue clock off). On for the rest.
+
+**OFXR's log covers only the last 6.4 minutes.** It reached its 256 MB limit at 1434 s (18:41:52) and started again; the records from 9.8 s to 1434 s are gone (`seq` jumps from 2,281 to 2,821,490). Both off windows are in the lost part. Last flight did not notice: it shows the flight as complete (`partial: false`) and the engine card empty (all 382 seconds left out, the switches being outside the log). R24.
+
+**Freezes over the whole session**, from two sources that do not depend on OFXR's log: DCS's own `ModelTimeQuantizer: ANTIFREEZE ENABLED` line in dcs.log, and the engine module's frame rate every 2 s (`stats … calls/s`, one collect per frame). Both were checked on the one freeze OFXR did log (1753.9 s = 18:47:12, 268 ms): dcs.log has an ANTIFREEZE line at 18:47:12.281 and the 2 s rate drops to 25.5. The 113 ms late frame at 1533 s left neither, so they mark the ~240 ms kind only.
+
+| Part of the session | Time | Freezes (ANTIFREEZE, and the 2 s rate under 27) |
+| --- | --- | --- |
+| FLIR mission, after its first 30 s (on) | 4.9 min | **0** (17:36: 6 in about 7 min) |
+| Perf-test mission, off windows | 50 s | **0** (lowest 2 s rate 29.0) |
+| Perf-test mission, on, after its first 30 s | 22.3 min | 6: mission time 303, 340, 734, 736, 936, 1351 s (0.27/min; 17:36's on side 0.27/min) |
+| ... of them in 243-440 s, the mission time of 17:36's off side | 3.3 min | 2 (17:36, off: 16) |
+
+What this shows:
+
+- **Switching the optimizations off did not bring the freezes back this time.** At 17:36, 6 freezes came in the first 20 s after the switch; here two off windows of 22 s and 28 s, with video memory just as full (23.9-24.4 of 24.1 GB through the whole mission, both windows included), had none. At 17:36's off rate (4.9/min) about four were due in 50 s.
+- **The mission phase alone does not reproduce 17:36 either**: the same mission time (243-440 s) with the optimizations on had 2 freezes, against 16 off at 17:36. Over the whole mission the on rate matches 17:36's on rate exactly (0.27/min).
+- So neither the switch on its own (short windows, early in the mission) nor the later phase on its own explains the 17:36 burst. Left open: something that builds up over minutes off (the off side at 17:36 was 196 s in one go), or something at 17:36 this run did not have. The switch is a weaker suspect than it was; it is not cleared for a long off stretch.
+- **The one freeze in the log has the same shape again** (1753.9 s, on): Virtual Desktop's xrEndFrame 94.2 ms, 94.3 ms, then 35.8 ms in a row on OFXR's presenter, DCS's xrEndFrame held ~260 ms in the pair hold (R19). So the shape is not tied to the switch: it happens with the optimizations on, at about one every 4 minutes on this mission.
+
+The logged 6.4 minutes (perf-test mission time about 1045-1420 s, on; no earlier flight reached past 440 s), against 15:36 (same mode):
+
+| Figure (steady seconds) | 15:36 (mission 66-250 s) | 18:17 (mission about 1045-1420 s) |
+| --- | --- | --- |
+| Steady seconds | 177 | 370 |
+| Late frames / min, M5 report (over 1.25 slots) | 10.9 | **10.7** (65 late frames, 1,387 ms over the slot) |
+| Late frames / min, Last flight (M6) | — | 13.0 (45 one refresh late, 18 two, 17 three or more) |
+| Missed refreshes / min, corrections left out | 13.8 | **22.5** (139; about 24 of them in the one freeze), 86 display-time corrections counted apart |
+| Generated frame still unwritten a refresh later (406) | 0.16/s | 0.18/s |
+| Freezes (100 ms or more), longest | — | 3, 267 ms (see below) |
+| Virtual Desktop's xrEndFrame over 30 ms | — | 3 (all in the one freeze) |
+| CPU ms per frame p50 / p90 / p99 | 5.3 / 6.8 / 11.9 | **7.0 / 8.5** / 12.3 |
+| DCS GPU ms p50 / p90 | 19.3 / 21.1 | 21.2 / 23.3 (10 ms of headroom in the 33.3 ms slot) |
+| GPU power p50 | 279 W | 292 W |
+
+- **Late frames held at the same rate in a heavier phase** (CPU per frame up 1.7 ms at p50, GPU up 2 ms). Where they went (M5): OFXR's pair hold largest in 31 (mostly xrEndFrame 33-48 ms, the hold a refresh long), DCS's drawing in 24 (the longest: 104, 84, 76, 72 ms at 1489-1640 s, with missile effects in dcs.log, `OParticleSystem: preset 'missile' not found`), the main thread in 6 (`RadioVoice:423` 52 ms at 1625.9 s, the longest script call of all flights; 3,066 calls of it in this run), between frames 4.
+- **Last flight's Freezes row (3)** holds the 268 ms freeze, and at least one of the 113-228 ms frames after the mission ended at 1821 s: DCS's unloading and menu still count as steady flight (the caveat noted under R22). Only the 268 ms one was in flight.
+- **Scripts over the whole run** (M4, 11,134 calls): `RadioVoice:423` 52, 43, 43, 39, 39 ms; `RadioVoice:298` 47 ms; `Civilianai:47` 41 ms. Same three as every flight.
+
+Next flight: to settle the switch, Engine Optimizations off for one **long** stretch (5 minutes or more, through mission time 243-440 s), the rest on; restart DCS and load only the perf-test mission. Keep the run under about 20 minutes, or OFXR's log wraps again (R24); dcs.log's ANTIFREEZE lines count freezes either way.
+
 ## A/B protocol (from R1)
 
 1. **Measure with M2**: Late frames/min and Missed refreshes/min are the primary figures; one per change as listed under Changes.
@@ -399,3 +442,4 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | R21 | Last flight's late-frame steps in 3× start at 3.5 refreshes (1.17 slots), the report's at 1.25 slots, so the two disagree in 3× only (26 against 10.9/min at 15:36); Rendered FPS averages time outside FOCUSED | `LastFlight.cs:530`, 15:36 flight | One threshold for both (1.25 slots, or a whole refresh over the slot); Rendered FPS over steady seconds | Fixed (M6) |
 | R22 | The steady filter drops any second under 90% of the paced rate and the 2 s either side, so a single 240 ms freeze (22-24 frames in that second) removes 5 s from every figure. The worst stalls are never counted, and a side with more of them can look better | 17:36: off side 111 steady seconds of 196, late 15.7 against 24.6/min over every flying second, missed 13.5 against 141/min | Keep short dips between steady seconds; report freezes over 100 ms as a row of their own | Fixed (M7): dips of up to 3 s with 10 frames a second or more stay in; DCS's menu after a mission (full rate) still counts as steady |
 | R23 | Last flight's Engine Optimizations card compares all on-time against all off-time in one DCS session, across missions | 17:36: on 3.2 ms CPU (mostly the FLIR night mission) against off 5.9 ms; same mission 6.1 against 5.9 | Compare within one mission load only (or the minutes either side of each switch); say which mission each side covers | Fixed (M7): within the mission loads with a switch (loads split by 5 s or more without flight); mission names not shown |
+| R24 | Last flight does not see that OFXR's log wrapped: the fork's log writer (0021) writes the kept session records again at the top of a wrapped log, so it still starts with `seq=1`, which is Last flight's test. At about 188 KB/s (3× at 90 Hz; 178 KB/s at 72 Hz 2×) the app's `max_file_mb=256` holds about 23 minutes | 18:17: log restarted at 1434 s, last 6.4 of 30 minutes read, shown as complete, engine card empty | Detect a wrap by the jump in `seq` after the kept records and show "last N min"; raise `max_file_mb` (with old logs pruned, R16); count dcs.log's `ANTIFREEZE ENABLED` lines as a freeze count for the whole flight, independent of OFXR's log | Open |
