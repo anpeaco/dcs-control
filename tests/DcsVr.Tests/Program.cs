@@ -2986,20 +2986,20 @@ Test("Quest 3 needs VDXR; another route's runtime is never used instead", () =>
 Test("Advanced OFXR settings: every key exists in the layer, defaults are the layer's, and the FPS counter takes any corner", () =>
 {
     var ini = ConfigurationWriters.Ofxr(new() { FrameGen = FrameGeneration.Nvidia });
-    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "position=off" })
+    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "single_swapchain_rings=1", "capture_at_end_frame=1", "position=off" })
         Require(ini.Contains(expected), expected);
     var source = File.ReadAllText(Path.Combine(workspace, "external/ofxr-djules75/src/common/implicit_layer.cpp"));
     foreach (var key in ini.Split('\n').Select(l => l.Trim()).Where(l => l.Contains('=') && !l.StartsWith('[')).Select(l => l.Split('=')[0]).Except(["max_file_mb", "flush_each_event", "logging_enabled", "position", "enabled", "motion_vectors"]))
         Require(source.Contains("L\"" + key + "\"", StringComparison.Ordinal), key + " is read by OFXR");
-    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
+    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, OfxrSingleRings = false, OfxrCaptureAtEndFrame = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
     var written = ConfigurationWriters.Ofxr(tuned);
-    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "position=lower_left" })
+    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "single_swapchain_rings=0", "capture_at_end_frame=0", "position=lower_left" })
         Require(written.Contains(expected), expected);
     foreach (var (corner, value) in new[] { (OverlayCorner.UpperRight, "upper_right"), (OverlayCorner.UpperLeft, "upper_left"), (OverlayCorner.LowerRight, "lower_right") })
         Require(ConfigurationWriters.Ofxr(tuned with { OverlayPosition = corner }).Contains("position=" + value), value);
     Require(JsonData.Deserialize<VrProfile>(JsonData.Serialize(tuned)) == tuned);
     var older = System.Text.Json.Nodes.JsonNode.Parse(JsonData.Serialize(new VrProfile()))!.AsObject();
-    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains" }) Require(older.Remove(name), name);
+    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains", "ofxrSingleRings", "ofxrCaptureAtEndFrame" }) Require(older.Remove(name), name);
     Require(JsonData.Deserialize<VrProfile>(older.ToJsonString()) == new VrProfile(), "a profile saved before these settings loads with the layer's defaults");
     Require(ProfileValidation.Validate(new() { OverlayPosition = (OverlayCorner)9 }).Any(i => i.Code == "overlay-position"));
 });

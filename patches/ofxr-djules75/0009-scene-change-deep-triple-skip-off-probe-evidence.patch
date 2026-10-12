@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cba205a..c62a37a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -988,6 +988,24 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+@@ -1107,6 +1107,24 @@ if(WIN32 AND XRFG_BUILD_LAYER)
                      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/layer_triple_deep.cmake")
              set_tests_properties(xrfg_layer_triple_deep_${deep_case} PROPERTIES TIMEOUT 120)
          endforeach()
@@ -28,10 +27,9 @@ index cba205a..c62a37a 100644
          # NVIDIA optical flow cannot initialise on the fake runtime's WARP
          # device, so an ini asking for it exercises the layer's fallback to
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
-index 2bafb0a..871282d 100644
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -267,6 +267,13 @@ enum class BridgeFlightOperation : std::uint32_t {
+@@ -326,6 +326,13 @@ enum class BridgeFlightOperation : std::uint32_t {
      // is drawn), c= its area as a share of its bounding rectangle, in
      // permille. result=3: the runtime said the mask changed (a= the view).
      visibility_mask,
@@ -46,10 +44,9 @@ index 2bafb0a..871282d 100644
  
  struct BridgeFlightToken {
 diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
-index addc964..de72222 100644
 --- a/include/xrfg/implicit_layer.hpp
 +++ b/include/xrfg/implicit_layer.hpp
-@@ -115,7 +115,17 @@ struct ConfiguredNvidiaOptions {
+@@ -173,7 +173,17 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
  // DCS VR Control (0006). `[ofxr] late_frame_skip`: in 3X, on a runtime other
  // than SteamVR, a first synthetic that keeps reaching the runtime late is not
  // made while that lasts, and its slot re-presents the previous real frame on
@@ -69,7 +66,6 @@ index addc964..de72222 100644
      const std::filesystem::path& module_directory) noexcept;
  
 diff --git a/include/xrfg/latency_control.hpp b/include/xrfg/latency_control.hpp
-index d49019f..4fefb68 100644
 --- a/include/xrfg/latency_control.hpp
 +++ b/include/xrfg/latency_control.hpp
 @@ -20,6 +20,8 @@
@@ -315,11 +311,10 @@ index d49019f..4fefb68 100644
  // of the measured slack is the depth itself and is not given back as delay,
  // so the tuner keeps that period in hand (it raises only past a period plus
 diff --git a/layer/ofxr_bridge.ini b/layer/ofxr_bridge.ini
-index 73a08b4..555ef9a 100644
 --- a/layer/ofxr_bridge.ini
 +++ b/layer/ofxr_bridge.ini
-@@ -20,7 +20,13 @@ deep_pipeline=1
- triple_frame_gen=0
+@@ -43,7 +43,13 @@ capture_at_end_frame=1
+ vulkan_session_bridge=1
  ; Under adaptive_frame_gen=1: a steady 3X tries 2X every 20 s (backing off to
  ; 2 min after a failed try) and keeps it when it holds. 1 on (default), 0 off.
 +; A stall of a second or more (a mission load) starts it over.
@@ -333,10 +328,9 @@ index 73a08b4..555ef9a 100644
  ; a submission waits only for what it shows. 1 on (default), 0 off.
  own_binding_queue=1
 diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
-index 4caca23..6d0d987 100644
 --- a/src/common/implicit_layer.cpp
 +++ b/src/common/implicit_layer.cpp
-@@ -259,15 +259,16 @@ bool read_adaptive_frame_gen(
+@@ -417,15 +417,16 @@ bool read_adaptive_frame_gen(
  
  bool read_late_frame_skip(
      const std::filesystem::path& module_directory) noexcept {
@@ -357,7 +351,6 @@ index 4caca23..6d0d987 100644
  }
  
 diff --git a/src/core/latency_control.cpp b/src/core/latency_control.cpp
-index 6115bc2..5901bac 100644
 --- a/src/core/latency_control.cpp
 +++ b/src/core/latency_control.cpp
 @@ -284,7 +284,8 @@ std::size_t display_time_mode(
@@ -439,10 +432,9 @@ index 6115bc2..5901bac 100644
      }
      if (decision.stats.late >= config_.upshift_late_episodes) {
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
-index 739a2dc..9c53c9f 100644
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -108,6 +108,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -120,6 +120,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "adaptive_probe";
      case BridgeFlightOperation::visibility_mask:
          return "visibility_mask";
@@ -452,10 +444,9 @@ index 739a2dc..9c53c9f 100644
          return "synthesis_frame_start_wait";
      case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index e0afd93..825c22f 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -764,8 +764,15 @@ struct LeadReadiness {
+@@ -797,8 +797,15 @@ struct LeadReadiness {
  };
  
  struct TripleSlackSink {
@@ -472,7 +463,7 @@ index e0afd93..825c22f 100644
  };
  
  void report_lead_slack(LeadReadiness& lead, TripleSlackSink& sink) noexcept {
-@@ -779,10 +786,11 @@ void report_lead_slack(LeadReadiness& lead, TripleSlackSink& sink) noexcept {
+@@ -812,10 +819,11 @@ void report_lead_slack(LeadReadiness& lead, TripleSlackSink& sink) noexcept {
          // Drained every presenter cycle; a bound only against a presenter
          // that has stopped.
          if (sink.samples.size() < 256) {
@@ -486,7 +477,7 @@ index e0afd93..825c22f 100644
          }
      } catch (...) {
      }
-@@ -1671,7 +1679,7 @@ struct SessionState {
+@@ -1758,7 +1766,7 @@ struct SessionState {
      std::uint32_t skip_unavailable_second{};
      std::uint32_t skip_ready_second{};
      // `[ofxr] late_frame_skip`. Fixed for the session.
@@ -495,7 +486,7 @@ index e0afd93..825c22f 100644
      // DCS VR Control (0007): 3X can take the deeper pipeline on this binding
      // (D3D12, the D3D11 bridge's included): deep_pipeline=1 then applies to
      // 3X as well. Fixed for the session.
-@@ -1695,6 +1703,17 @@ struct SessionState {
+@@ -1782,6 +1790,17 @@ struct SessionState {
      // late_skip_active is what the xrEndFrame thread reads.
      xrfg::latency::LateFrameSkipController late_skip;
      std::atomic<bool> late_skip_active{false};
@@ -513,7 +504,7 @@ index e0afd93..825c22f 100644
      // The last submission was a fresh real frame, so this slot is the one a
      // first synthetic takes in 3X.
      bool presenter_previous_real{};
-@@ -8071,7 +8090,7 @@ void fill_triple_release_report(
+@@ -9319,7 +9338,7 @@ void fill_triple_release_report(
  // the other way round.
  void drain_triple_slack(
      SessionState& state, TripleReleaseReport* report) noexcept {
@@ -522,7 +513,7 @@ index e0afd93..825c22f 100644
      try {
          std::scoped_lock lock(state.triple_slack_sink.mutex);
          samples.swap(state.triple_slack_sink.samples);
-@@ -8079,10 +8098,22 @@ void drain_triple_slack(
+@@ -9327,10 +9346,22 @@ void drain_triple_slack(
          return;
      }
      const std::uint32_t epoch = state.triple_release_epoch.load();
@@ -546,7 +537,7 @@ index e0afd93..825c22f 100644
          // DCS VR Control (0007): with the deeper pipeline a period of it is
          // the depth, kept in hand. DCS VR Control (0008): once a slot has
          // been taken; until then there is no such period.
-@@ -8104,9 +8135,10 @@ void report_triple_slot_missed(SessionState& state) noexcept {
+@@ -9352,9 +9383,10 @@ void report_triple_slot_missed(SessionState& state) noexcept {
      try {
          std::scoped_lock lock(state.triple_slack_sink.mutex);
          if (state.triple_slack_sink.samples.size() < 256) {
@@ -559,7 +550,7 @@ index e0afd93..825c22f 100644
          }
      } catch (...) {
      }
-@@ -9052,6 +9084,25 @@ void continuous_presenter_main(
+@@ -10310,6 +10342,25 @@ void continuous_presenter_main(
                      }
                  }
                  state->presenter_skip_slot_consumed = false;
@@ -585,7 +576,7 @@ index e0afd93..825c22f 100644
                  if (depth_slot) {
                      // DCS VR Control (0007): re-presented on time, nothing
                      // popped; the first synthetic waiting takes the next slot.
-@@ -9136,8 +9187,21 @@ void continuous_presenter_main(
+@@ -10394,8 +10445,21 @@ void continuous_presenter_main(
                          // runtime may still see it in time, but it is the
                          // application's frame arriving late all the same.
                          // Only where its readiness is known at all.
@@ -608,7 +599,7 @@ index e0afd93..825c22f 100644
                          }
                          // 3X release delay; see triple_release.
                          if (state->frames_per_application_frame > 2 &&
-@@ -10357,9 +10421,14 @@ void continuous_presenter_main(
+@@ -11669,9 +11733,14 @@ void continuous_presenter_main(
                  state->presenter_skip_slot_consumed = skip_slot;
              }
              // The skip's evidence: one observation per first synthetic's
@@ -625,7 +616,7 @@ index e0afd93..825c22f 100644
                  const auto now_ns = steady_nanoseconds(downstream_end_started);
                  if (skip_slot) {
                      skip_step = state->late_skip.observe_skipped(
-@@ -10379,11 +10448,17 @@ void continuous_presenter_main(
+@@ -11691,11 +11760,17 @@ void continuous_presenter_main(
              }
              // DCS VR Control (0007): and the deeper pipeline's, which takes
              // one more slot while first synthetics keep going out late.
@@ -643,7 +634,7 @@ index e0afd93..825c22f 100644
                  } else if (submission_kind == SubmissionKind::gen1) {
                      state->triple_depth.observe_leader(submitted_late);
                  } else if (submission_kind == SubmissionKind::repeat) {
-@@ -13336,6 +13411,84 @@ void reclaim_lazy_runtimes(const std::shared_ptr<SessionState>& state) noexcept
+@@ -14779,6 +14854,84 @@ void reclaim_lazy_runtimes(const std::shared_ptr<SessionState>& state) noexcept
  // adaptive off live puts the session in the mode the ini names; turning it on
  // live starts the controller in the mode the session is in. A switch resets
  // the 3X release delay and rebases the display time correction.
@@ -728,7 +719,7 @@ index e0afd93..825c22f 100644
  void apply_live_frame_multiplier(
      const std::shared_ptr<SessionState>& state,
      bool use_continuous_presenter) noexcept {
-@@ -13609,6 +13762,7 @@ void apply_live_frame_multiplier(
+@@ -15052,6 +15205,7 @@ void apply_live_frame_multiplier(
              state->late_skip_active = false;
              state->presenter_previous_real = false;
              state->presenter_skip_slot_consumed = false;
@@ -736,7 +727,7 @@ index e0afd93..825c22f 100644
              // The display time correction too, scaled to the new period or
              // taken from what was learned in this shape before.
              const auto display_period = static_cast<xrfg::latency::Nanoseconds>(
-@@ -13887,6 +14041,19 @@ XrResult layer_end_frame_impl(
+@@ -15386,6 +15540,19 @@ XrResult layer_end_frame_impl(
      if (!state || state->dispatch->end_frame == nullptr) {
          return XR_ERROR_HANDLE_INVALID;
      }
@@ -756,16 +747,15 @@ index e0afd93..825c22f 100644
      // DCS VR Control (0004): the frame's throughput evidence, before the
      // layer queues anything of its own on the application's context; and
      // the next frame's GPU bracket opened when this call returns.
-@@ -13980,6 +14147,7 @@ XrResult layer_end_frame_impl(
+@@ -15477,6 +15644,7 @@ XrResult layer_end_frame_impl(
          return XR_SUCCESS;
      };
  
 +    apply_scene_change(state); // DCS VR Control (0009)
      apply_live_frame_multiplier(state, use_continuous_presenter);
-     apply_embedded_control(state);
-     const bool manually_disarmed = state->manual_control.stop_requested();
+     log_video_memory_periodically(*state);
+     apply_embedded_control(state, use_continuous_presenter);
 diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
-index 2f401ee..d64ca16 100644
 --- a/tests/bridge_flight_logger_tests.cpp
 +++ b/tests/bridge_flight_logger_tests.cpp
 @@ -216,6 +216,13 @@ int main(int argc, char** argv) {
@@ -794,7 +784,6 @@ index 2f401ee..d64ca16 100644
          std::cout << "Bridge flight logger tests passed.\n";
          return 0;
 diff --git a/tests/latency_control_tests.cpp b/tests/latency_control_tests.cpp
-index 04f53aa..598714d 100644
 --- a/tests/latency_control_tests.cpp
 +++ b/tests/latency_control_tests.cpp
 @@ -862,8 +862,9 @@ void probe_tests() {
@@ -1145,10 +1134,9 @@ index 04f53aa..598714d 100644
          return 0;
      } catch (const std::exception& error) {
 diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
-index 264a679..c820b93 100644
 --- a/tests/layer_call_chain.cpp
 +++ b/tests/layer_call_chain.cpp
-@@ -232,6 +232,25 @@ int g_triple_deep_jitter_us = 0;
+@@ -258,6 +258,25 @@ int g_triple_deep_jitter_us = 0;
  // 2), never as the deeper one (3 or 4) - checked by layer_triple_deep.cmake.
  bool g_triple_deep_quad_mode = false;
  int g_simulated_render_us = 0;
@@ -1174,17 +1162,17 @@ index 264a679..c820b93 100644
  // dcs-throughput-down / dcs-throughput-gpu (DCS VR Control, 0004):
  // dcs-adaptive's shape, starting in 3X, with the application's CPU and GPU
  // time per frame set apart - CPU by a sleep from the frame's start, GPU by a
-@@ -2504,7 +2523,8 @@ int main(int argc, char** argv) {
-             "dcs-throughput-gpu|d3d11-bridge|"
-             "d3d11-bridge-acquire-ahead|d3d11-bridge-unsubmitted|"
+@@ -2595,7 +2614,8 @@ int main(int argc, char** argv) {
+             "dcs-throughput-gpu|d3d11-bridge|d3d11-bridge-acquire-ahead|"
+             "d3d11-bridge-late-paint|d3d11-bridge-unsubmitted|"
              "d3d11-bridge-fallback|dcs-late-skip|dcs-triple-deep|"
--            "dcs-triple-deep-jitter|dcs-triple-deep-quad]\n";
+-            "dcs-triple-deep-jitter|dcs-triple-deep-quad|steamvr-own-time]\n";
 +            "dcs-triple-deep-jitter|dcs-triple-deep-quad|dcs-triple-scenes|"
-+            "dcs-adaptive-scenes]\n";
++            "dcs-adaptive-scenes|steamvr-own-time]\n";
          return EXIT_FAILURE;
      }
      g_dcs_d3d11_mode = argc == 4 && std::strcmp(argv[3], "dcs-d3d11") == 0;
-@@ -2527,6 +2547,11 @@ int main(int argc, char** argv) {
+@@ -2620,6 +2640,11 @@ int main(int argc, char** argv) {
              argc == 4 && std::strcmp(argv[3], "dcs-triple-deep-quad") == 0;
          g_triple_deep_mode = steady || jitter || g_triple_deep_quad_mode;
          g_triple_deep_jitter_us = jitter ? 3000 : 0;
@@ -1196,7 +1184,7 @@ index 264a679..c820b93 100644
      }
      {
          const bool throughput_down =
-@@ -2540,7 +2565,7 @@ int main(int argc, char** argv) {
+@@ -2633,7 +2658,7 @@ int main(int argc, char** argv) {
          g_adaptive_latency_mode = g_adaptive_latency_mode || g_throughput_mode;
      }
      g_display_latency_mode = g_adaptive_latency_mode || g_late_skip_mode ||
@@ -1205,7 +1193,7 @@ index 264a679..c820b93 100644
          (argc == 4 && std::strcmp(argv[3], "dcs-latency") == 0);
      g_dcs_mode = g_dcs_d3d11_mode || g_display_latency_mode ||
          (argc == 4 && std::strcmp(argv[3], "dcs") == 0);
-@@ -2597,8 +2622,9 @@ int main(int argc, char** argv) {
+@@ -2703,8 +2728,9 @@ int main(int argc, char** argv) {
              g_frames_per_application_frame = 3;
              g_deep_pipeline = true;
          }
@@ -1216,7 +1204,7 @@ index 264a679..c820b93 100644
          // Adaptive 2X/3X reserves 3X's ring from the start, on a binding 3X
          // covers - any but a D3D11 session left on the interop.
          if (GetPrivateProfileIntW(
-@@ -4112,6 +4138,18 @@ int main(int argc, char** argv) {
+@@ -4252,6 +4278,18 @@ int main(int argc, char** argv) {
                      if (g_gpu_simulator) {
                          g_throughput_phases.push_back(phases);
                      }
@@ -1235,7 +1223,7 @@ index 264a679..c820b93 100644
                  } else {
                      ok = ok && XR_SUCCEEDED(next_wait_result) &&
                          capture_fresh_application_image() &&
-@@ -4214,7 +4252,8 @@ int main(int argc, char** argv) {
+@@ -4354,7 +4392,8 @@ int main(int argc, char** argv) {
          // agreeing windows of thirty real frames), and in 3X for the queue
          // to reach its depth first, then until it has.
          const int kOverlappingFrames =
@@ -1245,7 +1233,7 @@ index 264a679..c820b93 100644
              : g_display_latency_mode
                  ? (g_frames_per_application_frame > 2 ? 300 : 160)
                  : 8;
-@@ -4225,7 +4264,7 @@ int main(int argc, char** argv) {
+@@ -4365,7 +4404,7 @@ int main(int argc, char** argv) {
          constexpr int kSettleBound = 400;
          int settle_frames = 0;
          if (g_display_latency_mode && !g_adaptive_latency_mode &&
@@ -1254,7 +1242,7 @@ index 264a679..c820b93 100644
              settle_frames = run_until_settled(kSettleBound);
          }
          // dcs-triple-deep (0007): 14 s of a steady application, the last 8
-@@ -4249,6 +4288,54 @@ int main(int argc, char** argv) {
+@@ -4389,6 +4428,54 @@ int main(int argc, char** argv) {
              }
              g_simulated_render_us = 0;
          }
@@ -1309,7 +1297,7 @@ index 264a679..c820b93 100644
          // dcs-late-skip (0006): where each phase starts in the records.
          std::size_t late_skip_heavy_from = 0;
          std::size_t late_skip_light_from = 0;
-@@ -4418,6 +4505,120 @@ int main(int argc, char** argv) {
+@@ -4558,6 +4645,120 @@ int main(int argc, char** argv) {
                        << throughput_frames << " frames\n";
              return EXIT_SUCCESS;
          }
@@ -1432,7 +1420,6 @@ index 264a679..c820b93 100644
              // synthetics and a real one per application frame, nothing
 diff --git a/tests/layer_scene_change.cmake b/tests/layer_scene_change.cmake
 new file mode 100644
-index 0000000..f354162
 --- /dev/null
 +++ b/tests/layer_scene_change.cmake
 @@ -0,0 +1,174 @@
@@ -1612,7 +1599,6 @@ index 0000000..f354162
 +message(STATUS "Scene change (3X deep): ${scene}; third slot in the heavy phase, depth re-armed after the load;${summary}")
 diff --git a/tests/ofxr_bridge_scenes_adaptive.ini b/tests/ofxr_bridge_scenes_adaptive.ini
 new file mode 100644
-index 0000000..b82ddbe
 --- /dev/null
 +++ b/tests/ofxr_bridge_scenes_adaptive.ini
 @@ -0,0 +1,19 @@
@@ -1637,7 +1623,6 @@ index 0000000..b82ddbe
 +position=upper_right
 diff --git a/tests/ofxr_bridge_scenes_triple.ini b/tests/ofxr_bridge_scenes_triple.ini
 new file mode 100644
-index 0000000..0ac41e5
 --- /dev/null
 +++ b/tests/ofxr_bridge_scenes_triple.ini
 @@ -0,0 +1,18 @@

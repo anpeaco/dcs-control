@@ -3,7 +3,7 @@
 | Component | Pinned version / revision | Use |
 | --- | --- | --- |
 | OFXR Bridge | 0.2.1 / `dad56acafc6e1dde219940427738b926cf2ea555` | Original release ZIP; LGPL-3.0-or-later |
-| OFXR Bridge (djules75 fork) | 0.2.9.1 / `8cdee48ec97afc41cff0a48c68a44566643c9943` (https://github.com/djules75/OFXR-Bridge) | Source build by `scripts/build-ofxr-djules75.ps1`, shipped in `components/ofxr` and used for every framegen profile (DCS's second-thread xrWaitFrame deadlocks upstream 0.2.1); LGPL-3.0-or-later, source in the corresponding-source archive under `upstream/ofxr-djules75` |
+| OFXR Bridge (djules75 fork) | 0.2.13.2 / `07449429c139e5d2070b6f0855ed5323de7cee00` (https://github.com/djules75/OFXR-Bridge) | Source build by `scripts/build-ofxr-djules75.ps1`, shipped in `components/ofxr` and used for every framegen profile (DCS's second-thread xrWaitFrame deadlocks upstream 0.2.1); LGPL-3.0-or-later, source in the corresponding-source archive under `upstream/ofxr-djules75` |
 | CheekyFoveatedDLSS | 0.5.4 / `d6c18b23d31f7339735114c621bc3f9066e1a32d` | Original standalone ZIP/loaders; modified source-built host/runtime and matching OpenXR layer for focus profiles; GPL-3.0 |
 | Quad-Views-Foveated | 1.1.3 / `957ff0327185ea29acc41fc86c4cdc3caf428fb9` | Locally compiled provider; MIT |
 | Sboys CustomHeadsetOpenVR | 1.3.0 / `21185da63a9e4307ae876b3702a43a43044d451c` | Official download/import only; GPL-2.0 source plus separate private binary functionality |

@@ -83,7 +83,7 @@ diff --git a/src/core/diagnostic_overlay_model.cpp b/src/core/diagnostic_overlay
 diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
 --- a/src/layer/openxr_fps_overlay.cpp
 +++ b/src/layer/openxr_fps_overlay.cpp
-@@ -118,6 +118,10 @@ struct OpenXrFpsOverlay::Impl {
+@@ -121,6 +121,10 @@ struct OpenXrFpsOverlay::Impl {
      EngineStatusFn engine_status{};
      std::uint64_t next_engine_lookup_ms{};
      DiagnosticHotkey engine_hotkey;
@@ -94,7 +94,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
      std::uint64_t next_status_open_ms{};
  
      ~Impl() {
-@@ -354,6 +358,19 @@ struct OpenXrFpsOverlay::Impl {
+@@ -357,6 +361,19 @@ struct OpenXrFpsOverlay::Impl {
              tick - inputs.cheeky.publish_tick_ms <= kDcsVrStatusStaleMs;
      }
  
@@ -114,7 +114,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
      void read_engine(DiagnosticInputs& inputs) {
          inputs.engine_hotkey = engine_hotkey;
          if (!engine_status) {
-@@ -453,6 +470,7 @@ struct OpenXrFpsOverlay::Impl {
+@@ -461,6 +478,7 @@ struct OpenXrFpsOverlay::Impl {
              inputs.vram = vram;
              read_status(inputs);
              read_engine(inputs);
@@ -122,7 +122,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
              upload(panel, rasterize_diagnostic_panel(panel.width, panel.height,
                  format_diagnostic_lines(inputs), bgra()));
          }
-@@ -471,6 +489,7 @@ OpenXrFpsOverlay::OpenXrFpsOverlay(XrInstance instance, XrSession session, XrSys
+@@ -479,6 +497,7 @@ OpenXrFpsOverlay::OpenXrFpsOverlay(XrInstance instance, XrSession session, XrSys
      impl_->delivery = delivery;
      if (!parse_diagnostic_hotkey(environment("DCSVR_DIAG_HOTKEY"), impl_->hotkey)) impl_->hotkey = {};
      if (!parse_diagnostic_hotkey(environment("DCSVR_ENGINE_HOTKEY"), impl_->engine_hotkey)) impl_->engine_hotkey = {};

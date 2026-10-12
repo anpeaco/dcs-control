@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace DcsVr.Core;
 
-/// <param name="OfxrLayerDll">OFXR layer built from the djules75 fork (0.2.9.1, scripts/build-ofxr-djules75.ps1), used for
+/// <param name="OfxrLayerDll">OFXR layer built from the djules75 fork (0.2.13.2, scripts/build-ofxr-djules75.ps1), used for
 /// every framegen profile. Upstream 0.2.1 deadlocks DCS: DCS waits for the next frame on a second thread while OFXR's
 /// second cycle calls the runtime's xrWaitFrame on the render thread (reproduced offline and in the headset on
 /// 2026-10-03). The fork also creates private swapchains only for submitted swapchains, which replaces our earlier

@@ -1,0 +1,117 @@
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -2445,6 +2445,21 @@ constexpr std::size_t kPrivateRingSlotMax = 2;
+ // is handed, as Pimax's does. The interops (Vulkan, the legacy D3D11 path)
+ // mirror private images by index and keep the rings.
+ constexpr std::size_t kStagingSlotCount = 2;
++// DCS Control: the synthetic staging of a session whose synthetic ring has two
++// slots (two_slot_synthetic_ring: it started in the deeper pipeline or in 3X,
++// the sessions that can run 3X). 3X writes two synthetics per pair and
++// advances the synthetic slot by two, so with two staging textures every pair
++// wrote the very textures the previous pair had - and in the deeper pipeline,
++// or whenever the application's queue runs a frame behind, that pair is
++// still to be written on the GPU when the next one is prepared. The
++// synthesizer then refuses the next pair (ERROR_BUSY, synthesis_busy), the
++// session restarts continuity, the history captures behind it find their
++// slots still leased or read, and generation backs off for longer each time:
++// measured with the GPU over two display periods in 3X, 78 pairs in 950
++// frames against 970 with two private swapchains per output. Four give each
++// of the two pairs in flight its own two; a 2X session's single synthetic
++// per pair keeps two.
++constexpr std::size_t kSyntheticStagingSlotCount3X = 4;
+ 
+ struct FrameGenerationSwapchainState {
+     std::array<PrivateSwapchainState, kCurrentSlotCount> current{};
+@@ -2465,7 +2480,8 @@ struct FrameGenerationSwapchainState {
+     // hand-over copies into, by acquired index.
+     bool single_swapchain_rings{};
+     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kStagingSlotCount> current_staging{};
+-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kStagingSlotCount> synthetic_staging{};
++    // kStagingSlotCount of them, or kSyntheticStagingSlotCount3X (DCS Control).
++    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kSyntheticStagingSlotCount3X> synthetic_staging{};
+     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> current_runtime_images;
+     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> synthetic_runtime_images;
+     std::shared_ptr<HandoverCopier> copier;
+@@ -3756,7 +3772,11 @@ create_d3d12_frame_generation_swapchains(
+         // textures described like the runtime's images, so a hand-over copy
+         // is a whole-resource copy.
+         std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kStagingSlotCount> current_staging{};
+-        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kStagingSlotCount> synthetic_staging{};
++        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kSyntheticStagingSlotCount3X> synthetic_staging{};
++        // DCS Control: see kSyntheticStagingSlotCount3X.
++        const std::size_t synthetic_staging_count =
++            state->session->two_slot_synthetic_ring ? kSyntheticStagingSlotCount3X
++                                                    : kStagingSlotCount;
+         std::vector<ID3D12Resource*> current_destinations_raw;
+         std::vector<ID3D12Resource*> synthetic_destinations_raw;
+         std::shared_ptr<HandoverCopier> copier;
+@@ -3769,19 +3789,23 @@ create_d3d12_frame_generation_swapchains(
+             heap_properties.CreationNodeMask = 1;
+             heap_properties.VisibleNodeMask = 1;
+             HRESULT staging_result = S_OK;
+-            for (auto* staging : {&current_staging, &synthetic_staging}) {
+-                for (auto& texture : *staging) {
+-                    if (FAILED(staging_result)) {
+-                        break;
+-                    }
+-                    staging_result = state->session->d3d12_device->CreateCommittedResource(
+-                        &heap_properties,
+-                        D3D12_HEAP_FLAG_NONE,
+-                        &staging_description,
+-                        D3D12_RESOURCE_STATE_COMMON,
+-                        nullptr,
+-                        IID_PPV_ARGS(texture.ReleaseAndGetAddressOf()));
++            const auto create_staging = [&](Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
++                if (FAILED(staging_result)) {
++                    return;
+                 }
++                staging_result = state->session->d3d12_device->CreateCommittedResource(
++                    &heap_properties,
++                    D3D12_HEAP_FLAG_NONE,
++                    &staging_description,
++                    D3D12_RESOURCE_STATE_COMMON,
++                    nullptr,
++                    IID_PPV_ARGS(texture.ReleaseAndGetAddressOf()));
++            };
++            for (auto& texture : current_staging) {
++                create_staging(texture);
++            }
++            for (std::size_t slot = 0; slot < synthetic_staging_count; ++slot) {
++                create_staging(synthetic_staging[slot]);
+             }
+             copier = std::make_shared<HandoverCopier>();
+             if (SUCCEEDED(staging_result)) {
+@@ -3802,8 +3826,8 @@ create_d3d12_frame_generation_swapchains(
+             for (const auto& texture : current_staging) {
+                 current_destinations_raw.push_back(texture.Get());
+             }
+-            for (const auto& texture : synthetic_staging) {
+-                synthetic_destinations_raw.push_back(texture.Get());
++            for (std::size_t slot = 0; slot < synthetic_staging_count; ++slot) {
++                synthetic_destinations_raw.push_back(synthetic_staging[slot].Get());
+             }
+             log_video_memory(*state->session, VideoMemoryStage::staging,
+                 handle_value(state->handle));
+@@ -3894,7 +3918,7 @@ create_d3d12_frame_generation_swapchains(
+             // Destination indices are staging slots.
+             generation->current_images_per_slot = 1;
+             generation->synthetic_images_per_slot = 1;
+-            generation->synthetic_slot_count = kStagingSlotCount;
++            generation->synthetic_slot_count = synthetic_staging_count;
+         }
+         // 703: the rings' shape. a 1 for single-swapchain rings, b the
+         // runtime images per output, c the swapchain.
+diff --git a/tests/ofxr_bridge_adaptive.ini b/tests/ofxr_bridge_adaptive.ini
+--- a/tests/ofxr_bridge_adaptive.ini
++++ b/tests/ofxr_bridge_adaptive.ini
+@@ -1,9 +1,4 @@
+ [ofxr]
+-; DCS Control (port to 0.2.13.2): two swapchains per output. With the single-
+-; swapchain rings (V410) a GPU over two periods in 3X finds its history slot
+-; busy at almost every capture and generation resets each frame, upstream as
+-; well; this test is about adaptive control, not the rings.
+-single_swapchain_rings=0
+ enabled=1
+ frame_generation=ofxr
+ motion_vectors=off

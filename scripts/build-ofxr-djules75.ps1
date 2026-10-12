@@ -39,20 +39,22 @@ $compileText = [IO.File]::ReadAllText($compilePath)
 $compileText = $compileText.Replace('list(APPEND PERMUTATION_OUTPUTS ', 'list(APPEND LOCAL_PERMUTATION_OUTPUTS ')
 $compileText = $compileText.Replace('set(${PERMUTATION_OUTPUTS} ${PERMUTATION_OUTPUTS} PARENT_SCOPE)', 'set(${PERMUTATION_OUTPUTS} ${LOCAL_PERMUTATION_OUTPUTS} PARENT_SCOPE)')
 [IO.File]::WriteAllText($compilePath, $compileText)
-& $wrapper cmake -S "$sdkRoot/sdk" -B $sdkBuild -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFX_ALL=OFF -DFFX_OF=ON -DFFX_API_BACKEND=DX12_X64 -DFFX_BUILD_AS_DLL=OFF
+# The patched toolchain appends /machine:x64 to the cached linker flags on every configure, and the SDK then
+# only accepts the flags when they are exactly that: start each configure from empty flags.
+& $wrapper cmake -S "$sdkRoot/sdk" -B $sdkBuild -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFX_ALL=OFF -DFFX_OF=ON -DFFX_API_BACKEND=DX12_X64 -DFFX_BUILD_AS_DLL=OFF "-DCMAKE_EXE_LINKER_FLAGS="
 if ($LASTEXITCODE -ne 0) { throw 'FidelityFX configuration failed.' }
 & $wrapper cmake --build $sdkBuild --parallel 4
 if ($LASTEXITCODE -ne 0) { throw 'FidelityFX build failed.' }
-# --- djules75 fork of OFXR Bridge (DCS-capable since 0.2.6), pinned to tag 0.2.9.1 ---
+# --- djules75 fork of OFXR Bridge (DCS-capable since 0.2.6), pinned to tag 0.2.13.2 ---
 $forkRoot = Join-Path $workspaceRoot 'external/ofxr-djules75'
-$forkTag = '0.2.9.1'
-$forkCommit = '8cdee48ec97afc41cff0a48c68a44566643c9943'
+$forkTag = '0.2.13.2'
+$forkCommit = '07449429c139e5d2070b6f0855ed5323de7cee00'
 if (-not (Test-Path -LiteralPath $forkRoot)) {
     & git clone --branch $forkTag --depth 1 https://github.com/djules75/OFXR-Bridge.git $forkRoot
     if ($LASTEXITCODE -ne 0) { throw 'OFXR fork download failed.' }
 }
 $forkRevision = & git -C $forkRoot rev-parse HEAD
-if ($forkRevision -ne $forkCommit) { throw "Unexpected OFXR fork revision $forkRevision (expected $forkCommit for $forkTag)." }
+if ($forkRevision -ne $forkCommit) { throw "Unexpected OFXR fork revision $forkRevision (expected $forkCommit for $forkTag). A checkout from an earlier pin moves with: git -C external/ofxr-djules75 fetch --depth 1 origin tag $forkTag; git -C external/ofxr-djules75 checkout -f $forkCommit; git -C external/ofxr-djules75 clean -fd (review with -n first)." }
 # The fork's layer needs openvr.h (FPS overlay reads SteamVR delivery stats). Same pin as its CI.
 $openvrHeader = Join-Path $forkRoot 'external/openvr/openvr.h'
 $openvrSha256 = '94E5545370159C85F87CD6E15DD3739F7C919FC7A6E869F5E4ED463533A07ED0'

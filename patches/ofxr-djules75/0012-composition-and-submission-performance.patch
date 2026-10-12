@@ -1,5 +1,4 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index dc6065d..39e07e1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -152,6 +152,10 @@ if(WIN32 AND XRFG_BUILD_LAYER)
@@ -59,7 +58,6 @@ index dc6065d..39e07e1 100644
          "${XRFG_CURSOR_MOTION_HEADER}"
          "${XRFG_CURSOR_ARGUMENTS_HEADER}"
 diff --git a/src/d3d12/d3d12_frame_synthesizer.cpp b/src/d3d12/d3d12_frame_synthesizer.cpp
-index 94312ad..da4a103 100644
 --- a/src/d3d12/d3d12_frame_synthesizer.cpp
 +++ b/src/d3d12/d3d12_frame_synthesizer.cpp
 @@ -19,6 +19,10 @@
@@ -73,7 +71,7 @@ index 94312ad..da4a103 100644
  #include "pack_flow_input_shader.hpp"
  #include "synthesize_midpoint_pixel_shader.hpp"
  // DCS VR Control (0010): the smooth cursor's detection (smooth_cursor.hlsl).
-@@ -1014,6 +1018,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1033,6 +1037,9 @@ struct D3D12FrameSynthesizer::Impl {
      ComPtr<ID3D12PipelineState> nvidia_luma_pack_pipeline;
      ComPtr<ID3D12PipelineState> nvidia_graphics_pipeline;
      ComPtr<ID3D12PipelineState> nvidia_bidirectional_graphics_pipeline;
@@ -83,7 +81,7 @@ index 94312ad..da4a103 100644
      ComPtr<ID3D12Resource> packed_color;
      ComPtr<ID3D12Resource> optical_flow_vector;
      ComPtr<ID3D12Resource> optical_flow_scene_change;
-@@ -1299,8 +1306,17 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1318,8 +1325,17 @@ struct D3D12FrameSynthesizer::Impl {
          D3D12_ROOT_SIGNATURE_DESC root_description{};
          root_description.NumParameters = static_cast<UINT>(parameters.size());
          root_description.pParameters = parameters.data();
@@ -103,7 +101,7 @@ index 94312ad..da4a103 100644
          root_description.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
  
          ComPtr<ID3DBlob> serialized;
-@@ -1456,10 +1472,42 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1475,10 +1491,42 @@ struct D3D12FrameSynthesizer::Impl {
                  sizeof(g_xrfg_nvidia_fast_bidirectional_synthesize_midpoint_pixel_shader),
              };
          }
@@ -147,7 +145,7 @@ index 94312ad..da4a103 100644
      }
  
      [[nodiscard]] HRESULT create_fidelityfx_resources(UINT node_mask) {
-@@ -4555,6 +4603,16 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -4576,6 +4624,16 @@ struct D3D12FrameSynthesizer::Impl {
              slot.synthesis_command_list.Get();
          dred_marker(synthesis, "OFXR NVIDIA composition begin");
          if (nvidia_gpu_timing_enabled) {
@@ -164,7 +162,7 @@ index 94312ad..da4a103 100644
              synthesis->EndQuery(
                  nvidia_timestamp_heap.Get(),
                  D3D12_QUERY_TYPE_TIMESTAMP,
-@@ -4613,7 +4671,77 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -4634,7 +4692,77 @@ struct D3D12FrameSynthesizer::Impl {
              rtv_heap->GetCPUDescriptorHandleForHeapStart();
          // DCS VR Control (0008): each target view's visibility mask.
          const auto view_masks = write_view_masks(slot, target_views);
@@ -243,7 +241,7 @@ index 94312ad..da4a103 100644
              parameters.synthesis_flags = (parameters.synthesis_flags & 0xFFU) |
                  packed_synthesis_fraction(synthetic_output_fraction(output));
              const UINT first_rtv =
-@@ -5433,7 +5561,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -5455,7 +5583,9 @@ struct D3D12FrameSynthesizer::Impl {
              queue->ExecuteCommandLists(1, cursor_lists);
          }
  
@@ -254,7 +252,7 @@ index 94312ad..da4a103 100644
              result = slot.timing_marker_allocator->Reset();
              if (FAILED(result)) {
                  synthesis_enabled = false;
-@@ -5508,7 +5638,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -5530,7 +5660,7 @@ struct D3D12FrameSynthesizer::Impl {
              preceding_eye_value = next_nvidia_fence_value;
              if (eye_index == 0) {
                  eye0_fence_value = next_nvidia_fence_value;
@@ -263,7 +261,7 @@ index 94312ad..da4a103 100644
                      result = queue->Wait(
                          nvidia_fence.Get(), eye0_fence_value);
                      if (FAILED(result)) {
-@@ -5530,9 +5660,13 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -5552,9 +5682,13 @@ struct D3D12FrameSynthesizer::Impl {
              untracked_source = std::move(*newly_acquired);
              return result;
          }
@@ -279,7 +277,7 @@ index 94312ad..da4a103 100644
  
          // The synthetic's pixels exist once this signals. The current copy
          // is held back so it is not queued ahead of the synthetic frame.
-@@ -5555,9 +5689,6 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -5577,9 +5711,6 @@ struct D3D12FrameSynthesizer::Impl {
              pending_copy_slot = slot_index;
              pending_copy_fence_value = completion_value;
          } else {
@@ -290,7 +288,6 @@ index 94312ad..da4a103 100644
              ++next_fence_value;
              last_synthetic_fence_value = completion_value;
 diff --git a/src/d3d12/frame_synthesis.hlsl b/src/d3d12/frame_synthesis.hlsl
-index 28e9776..12da1a0 100644
 --- a/src/d3d12/frame_synthesis.hlsl
 +++ b/src/d3d12/frame_synthesis.hlsl
 @@ -1,5 +1,10 @@
@@ -304,7 +301,7 @@ index 28e9776..12da1a0 100644
  Texture2D<int2> BackwardFlow : register(t2);
  Texture2D<uint> FlowAuxiliary : register(t3);
  Texture2D<int2> ForwardFlow : register(t4);
-@@ -69,9 +74,14 @@ uint repeated_capture_flag() {
+@@ -105,9 +110,14 @@ float pack_flow_input_luma(float4 color) {
  
  // An unset field decodes to 0.5, which is the fixed midpoint this shader
  // used before the layer began deriving it.
@@ -320,7 +317,7 @@ index 28e9776..12da1a0 100644
  }
  
  float3 rotate_by_quaternion(float4 quaternion, float3 input_vector) {
-@@ -194,51 +204,15 @@ MappedCoordinate map_source_to_target(
+@@ -230,51 +240,15 @@ MappedCoordinate map_source_to_target(
  }
  
  float4 bilinear_previous_source(float2 coordinate, uint slice) {
@@ -378,7 +375,7 @@ index 28e9776..12da1a0 100644
  }
  
  // The ratio the flow input was packed at, relative to the source image.
-@@ -1112,3 +1086,52 @@ float4 SynthesizeNvidiaFastBidirectionalMidpointPS(
+@@ -1147,3 +1121,52 @@ float4 SynthesizeNvidiaFastBidirectionalMidpointPS(
      FullscreenVertex input) : SV_Target {
      return synthesize_midpoint(input, 1.0 / 32.0, true, true, true, false, true);
  }
@@ -432,10 +429,9 @@ index 28e9776..12da1a0 100644
 +    return output;
 +}
 diff --git a/tests/d3d12_history_tests.cpp b/tests/d3d12_history_tests.cpp
-index 1420997..07003f1 100644
 --- a/tests/d3d12_history_tests.cpp
 +++ b/tests/d3d12_history_tests.cpp
-@@ -4737,6 +4737,29 @@ void test_smooth_cursor(
+@@ -4851,6 +4851,29 @@ void test_smooth_cursor(
          off.feature = false;
          const CursorRun with = run_cursor_scenario(fixture, backend, nvidia_options, on);
          const CursorRun without = run_cursor_scenario(fixture, backend, nvidia_options, off);
@@ -465,7 +461,7 @@ index 1420997..07003f1 100644
          // Real frames are never touched.
          require(with.current_output == with.current_frame && without.current_output == with.current_output,
              "cursor: the real frame changed");
-@@ -4934,6 +4957,165 @@ void test_cursor_template_decoding() {
+@@ -5048,6 +5071,165 @@ void test_cursor_template_decoding() {
      std::cout << "cursor template decoding and fallback passed\n";
  }
  
@@ -631,7 +627,7 @@ index 1420997..07003f1 100644
  // XRFG_TEST_CURSOR_BENCH=1 on NVIDIA hardware: the detection's and the
  // composition's GPU time at a headset's resolution, the cursor moving every
  // frame (one acquisition, then tracking), against the feature off.
-@@ -5090,6 +5272,7 @@ int main() {
+@@ -5204,6 +5386,7 @@ int main() {
          if (GetEnvironmentVariableA("XRFG_TEST_NVIDIA_CURSOR", nullptr, 0)) {
              D3D12WarpFixture nvidia_fixture(true);
              test_smooth_cursor(nvidia_fixture, xrfg::D3D12OpticalFlowBackend::nvidia);
@@ -639,7 +635,7 @@ index 1420997..07003f1 100644
              xrfg::D3D12NvidiaOpticalFlowOptions full_bidirectional{};
              full_bidirectional.input_scale = xrfg::D3D12NvidiaInputScale::full;
              full_bidirectional.bidirectional = true;
-@@ -5099,6 +5282,13 @@ int main() {
+@@ -5213,6 +5396,13 @@ int main() {
              std::cout << "D3D12 NVIDIA smooth cursor tests passed\n";
              return 0;
          }

@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index a9f7140..cba205a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -918,9 +918,34 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+@@ -1037,9 +1037,34 @@ if(WIN32 AND XRFG_BUILD_LAYER)
                  "-DCALL_CHAIN=$<TARGET_FILE:xrfg_layer_call_chain>"
                  "-DPIPELINE_INI=${CMAKE_CURRENT_SOURCE_DIR}/tests/ofxr_bridge_d3d11_bridge_logging.ini"
                  "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/d3d11-bridge-fallback"
@@ -37,7 +36,7 @@ index a9f7140..cba205a 100644
          # DCS VR Control (0006): late submissions and the 3X late-frame skip
          # on a runtime that paces like a display, with the skip on (the
          # default) and turned off by the ini.
-@@ -948,7 +973,10 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+@@ -1067,7 +1092,10 @@ if(WIN32 AND XRFG_BUILD_LAYER)
          # steady at a third of the display rate, and the same with its frame
          # varying by 3 ms either way: every slot fresh, no first synthetic
          # late.
@@ -50,10 +49,9 @@ index a9f7140..cba205a 100644
                  NAME xrfg_layer_triple_deep_${deep_case}
                  COMMAND "${CMAKE_COMMAND}"
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
-index b34b030..2bafb0a 100644
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -258,6 +258,15 @@ enum class BridgeFlightOperation : std::uint32_t {
+@@ -317,6 +317,15 @@ enum class BridgeFlightOperation : std::uint32_t {
      // the median judged work, us; b= the projected GPU load, permille; c=
      // the interval to the next look, ms).
      adaptive_probe,
@@ -70,7 +68,6 @@ index b34b030..2bafb0a 100644
  
  struct BridgeFlightToken {
 diff --git a/include/xrfg/d3d11_bridge.hpp b/include/xrfg/d3d11_bridge.hpp
-index d1233cc..b503603 100644
 --- a/include/xrfg/d3d11_bridge.hpp
 +++ b/include/xrfg/d3d11_bridge.hpp
 @@ -163,6 +163,48 @@ public:
@@ -123,7 +120,6 @@ index d1233cc..b503603 100644
      struct Impl;
      std::unique_ptr<Impl> impl_;
 diff --git a/include/xrfg/d3d12_frame_synthesizer.hpp b/include/xrfg/d3d12_frame_synthesizer.hpp
-index 044ae3f..e06ddfe 100644
 --- a/include/xrfg/d3d12_frame_synthesizer.hpp
 +++ b/include/xrfg/d3d12_frame_synthesizer.hpp
 @@ -42,6 +42,11 @@ struct D3D12ReprojectionView {
@@ -160,7 +156,6 @@ index 044ae3f..e06ddfe 100644
      [[nodiscard]] HRESULT reconfigure(D3D12OpticalFlowBackend backend,
          D3D12NvidiaOpticalFlowOptions options) noexcept;
 diff --git a/include/xrfg/d3d12_history.hpp b/include/xrfg/d3d12_history.hpp
-index 6ff71c1..b845aa6 100644
 --- a/include/xrfg/d3d12_history.hpp
 +++ b/include/xrfg/d3d12_history.hpp
 @@ -3,6 +3,7 @@
@@ -171,7 +166,7 @@ index 6ff71c1..b845aa6 100644
  #include <memory>
  #include <mutex>
  #include <span>
-@@ -55,6 +56,35 @@ public:
+@@ -72,6 +73,35 @@ public:
          D3D12_RESOURCE_STATES release_state,
          D3D12HistoryInitializationStage* failure_stage = nullptr) noexcept;
  
@@ -205,13 +200,12 @@ index 6ff71c1..b845aa6 100644
 +    void set_read_retired_hook(ReadRetiredHook hook) noexcept;
 +
      // Queues the source-to-history copy and returns after signaling its fence;
-     // it never waits for GPU completion on the release path. If the next ring
-     // slot or its allocator is still in use, ERROR_BUSY is returned and the
+     // it never waits for the copy itself. If the next ring slot is still read
+     // or written on the GPU, it waits for that work for at most
 diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
-index dfd621e..addc964 100644
 --- a/include/xrfg/implicit_layer.hpp
 +++ b/include/xrfg/implicit_layer.hpp
-@@ -139,6 +139,32 @@ struct ConfiguredNvidiaOptions {
+@@ -197,6 +197,32 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
  [[nodiscard]] bool read_diag_vram(
      const std::filesystem::path& module_directory) noexcept;
  
@@ -245,7 +239,6 @@ index dfd621e..addc964 100644
  // switch live - one started with "Prefer FPS over latency" off, or one the
  // runtime's swapchain limit pushed back to a single synthetic. The tray asks
 diff --git a/include/xrfg/latency_control.hpp b/include/xrfg/latency_control.hpp
-index 19711fe..d49019f 100644
 --- a/include/xrfg/latency_control.hpp
 +++ b/include/xrfg/latency_control.hpp
 @@ -305,24 +305,37 @@ struct DisplayTimeCorrector {
@@ -350,10 +343,9 @@ index 19711fe..d49019f 100644
      Nanoseconds slack, Nanoseconds period, bool deep_pipeline) noexcept {
      return deep_pipeline && period > 0 ? slack - period : slack;
 diff --git a/layer/ofxr_bridge.ini b/layer/ofxr_bridge.ini
-index a5bd138..73a08b4 100644
 --- a/layer/ofxr_bridge.ini
 +++ b/layer/ofxr_bridge.ini
-@@ -26,6 +26,17 @@ adaptive_probe=1
+@@ -49,6 +49,17 @@ adaptive_probe=1
  own_binding_queue=1
  ; The in-headset diagnostic panel shows the GPU's memory. 0 off (default), 1 on.
  diag_vram=0
@@ -372,10 +364,9 @@ index a5bd138..73a08b4 100644
  ; menu, set vulkan_bridge=0 in tray.ini instead. Needs the OFXR Vulkan layer
  ; registered beside this one, which the tray does while armed with it on.
 diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
-index a0a82c9..4caca23 100644
 --- a/src/common/implicit_layer.cpp
 +++ b/src/common/implicit_layer.cpp
-@@ -304,6 +304,34 @@ bool read_diag_vram(const std::filesystem::path& module_directory) noexcept {
+@@ -462,6 +462,34 @@ bool read_diag_vram(const std::filesystem::path& module_directory) noexcept {
      return read_ofxr_switch(module_directory, L"diag_vram", false);
  }
  
@@ -411,7 +402,6 @@ index a0a82c9..4caca23 100644
      const std::filesystem::path& module_directory) noexcept {
      try {
 diff --git a/src/core/latency_control.cpp b/src/core/latency_control.cpp
-index 1cae500..6115bc2 100644
 --- a/src/core/latency_control.cpp
 +++ b/src/core/latency_control.cpp
 @@ -275,10 +275,16 @@ SynthesisGpuSplit split_synthesis_gpu_time(
@@ -563,7 +553,6 @@ index 1cae500..6115bc2 100644
  
  void AdaptiveFrameGenController::probe_skipped(Nanoseconds now) noexcept {
 diff --git a/src/d3d11/d3d11_bridge.cpp b/src/d3d11/d3d11_bridge.cpp
-index 4f58dbf..6cb835b 100644
 --- a/src/d3d11/d3d11_bridge.cpp
 +++ b/src/d3d11/d3d11_bridge.cpp
 @@ -135,6 +135,21 @@ struct D3D11BridgeSwapchain::Impl {
@@ -942,7 +931,6 @@ index 4f58dbf..6cb835b 100644
      try {
          std::scoped_lock lock(impl_->mutex);
 diff --git a/src/d3d12/d3d12_frame_synthesizer.cpp b/src/d3d12/d3d12_frame_synthesizer.cpp
-index 932747c..54d2a81 100644
 --- a/src/d3d12/d3d12_frame_synthesizer.cpp
 +++ b/src/d3d12/d3d12_frame_synthesizer.cpp
 @@ -67,7 +67,10 @@ struct NvidiaInputScaleRatio {
@@ -957,7 +945,7 @@ index 932747c..54d2a81 100644
  constexpr UINT kUavDescriptorCount = 3;
  constexpr UINT kDescriptorBlockSize =
      kSrvDescriptorCount + kUavDescriptorCount;
-@@ -679,6 +682,11 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -701,6 +704,11 @@ struct D3D12FrameSynthesizer::Impl {
          ComPtr<ID3D12CommandAllocator> timing_marker_allocator;
          ComPtr<ID3D12GraphicsCommandList> timing_marker_command_list;
          ComPtr<ID3D12DescriptorHeap> descriptor_heap;
@@ -969,7 +957,7 @@ index 932747c..54d2a81 100644
          std::array<NvidiaEyeResources, kMaxReprojectionViews> nvidia_eyes;
          D3D12NvidiaGpuTiming timing_metadata{};
          D3D12NvidiaGpuTiming cached_timing{};
-@@ -1637,6 +1645,70 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1659,6 +1667,70 @@ struct D3D12FrameSynthesizer::Impl {
              IID_PPV_ARGS(nvidia_timestamp_readback.GetAddressOf()));
      }
  
@@ -1040,7 +1028,7 @@ index 932747c..54d2a81 100644
      [[nodiscard]] HRESULT create_work_slots(UINT node_mask) noexcept {
  
          descriptor_increment = device->GetDescriptorHandleIncrementSize(
-@@ -1750,6 +1822,61 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1772,6 +1844,61 @@ struct D3D12FrameSynthesizer::Impl {
              const D3D12_CPU_DESCRIPTOR_HANDLE cpu_start =
                  slot.descriptor_heap->GetCPUDescriptorHandleForHeapStart();
  
@@ -1102,7 +1090,7 @@ index 932747c..54d2a81 100644
              D3D12_SHADER_RESOURCE_VIEW_DESC srv_description{};
              srv_description.Shader4ComponentMapping =
                  D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-@@ -2795,6 +2922,8 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2817,6 +2944,8 @@ struct D3D12FrameSynthesizer::Impl {
          }
  
          const auto rtv_start = rtv_heap->GetCPUDescriptorHandleForHeapStart();
@@ -1111,7 +1099,7 @@ index 932747c..54d2a81 100644
          for (UINT output = 0; output < synthetic_output_count(); ++output) {
              parameters.synthesis_flags = (parameters.synthesis_flags & 0xFFU) |
                  packed_synthesis_fraction(synthetic_output_fraction(output));
-@@ -2813,6 +2942,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2835,6 +2964,9 @@ struct D3D12FrameSynthesizer::Impl {
                          descriptor_increment));
                  parameters.slice = slice;
                  parameters.view_index = view_index;
@@ -1121,7 +1109,7 @@ index 932747c..54d2a81 100644
                  // The optical-flow fields are unused by the game-motion branch.
                  // Reuse them to carry the DLSS output rectangle associated with
                  // the stable eye stream without growing the root constants.
-@@ -2845,7 +2977,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2867,7 +2999,7 @@ struct D3D12FrameSynthesizer::Impl {
                  slot.command_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
                  set_viewport_and_scissor(slot.command_list.Get(), target_views[view_index].image_rect,
                      static_cast<UINT>(image_description.Width), image_description.Height);
@@ -1130,7 +1118,7 @@ index 932747c..54d2a81 100644
                  clear_synthetic_marker(slot.command_list.Get(), rtv, target_views[view_index],
                      static_cast<UINT>(image_description.Width), image_description.Height, debug_marker);
              }
-@@ -3319,6 +3451,8 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3343,6 +3475,8 @@ struct D3D12FrameSynthesizer::Impl {
  
          const D3D12_CPU_DESCRIPTOR_HANDLE rtv_start =
              rtv_heap->GetCPUDescriptorHandleForHeapStart();
@@ -1139,7 +1127,7 @@ index 932747c..54d2a81 100644
          for (UINT output = 0; output < synthetic_output_count(); ++output) {
              parameters.synthesis_flags = (parameters.synthesis_flags & 0xFFU) |
                  packed_synthesis_fraction(synthetic_output_fraction(output));
-@@ -3335,6 +3469,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3359,6 +3493,9 @@ struct D3D12FrameSynthesizer::Impl {
                      image_description.DepthOrArraySize);
                  parameters.slice = slice;
                  parameters.view_index = view_index;
@@ -1149,7 +1137,7 @@ index 932747c..54d2a81 100644
                  const D3D12_GPU_DESCRIPTOR_HANDLE block = offset_gpu_handle(
                      gpu_start,
                      slice * kDescriptorBlockSize,
-@@ -3361,7 +3498,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3385,7 +3522,7 @@ struct D3D12FrameSynthesizer::Impl {
                      target_views[view_index].image_rect,
                      static_cast<UINT>(image_description.Width),
                      image_description.Height);
@@ -1158,7 +1146,7 @@ index 932747c..54d2a81 100644
                  clear_synthetic_marker(synthesis, rtv, target_views[view_index],
                      static_cast<UINT>(image_description.Width), image_description.Height, debug_marker);
              }
-@@ -3663,6 +3800,8 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3688,6 +3825,8 @@ struct D3D12FrameSynthesizer::Impl {
  
          const D3D12_CPU_DESCRIPTOR_HANDLE rtv_start =
              rtv_heap->GetCPUDescriptorHandleForHeapStart();
@@ -1167,7 +1155,7 @@ index 932747c..54d2a81 100644
          for (UINT output = 0; output < synthetic_output_count(); ++output) {
              parameters.synthesis_flags = (parameters.synthesis_flags & 0xFFU) |
                  packed_synthesis_fraction(synthetic_output_fraction(output));
-@@ -3679,6 +3818,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3704,6 +3843,9 @@ struct D3D12FrameSynthesizer::Impl {
                      image_description.DepthOrArraySize);
                  parameters.slice = slice;
                  parameters.view_index = view_index;
@@ -1177,7 +1165,7 @@ index 932747c..54d2a81 100644
                  slot.command_list->SetGraphicsRoot32BitConstants(
                      2,
                      kSynthesisConstantCount,
-@@ -3694,7 +3836,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3719,7 +3861,7 @@ struct D3D12FrameSynthesizer::Impl {
                      target_views[view_index].image_rect,
                      static_cast<UINT>(image_description.Width),
                      image_description.Height);
@@ -1186,7 +1174,7 @@ index 932747c..54d2a81 100644
                  clear_synthetic_marker(slot.command_list.Get(), rtv, target_views[view_index],
                      static_cast<UINT>(image_description.Width), image_description.Height, debug_marker);
              }
-@@ -3889,6 +4031,8 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3914,6 +4056,8 @@ struct D3D12FrameSynthesizer::Impl {
              slot.descriptor_heap->GetGPUDescriptorHandleForHeapStart();
          const D3D12_CPU_DESCRIPTOR_HANDLE rtv_start =
              rtv_heap->GetCPUDescriptorHandleForHeapStart();
@@ -1195,7 +1183,7 @@ index 932747c..54d2a81 100644
          for (UINT output = 0; output < synthetic_output_count(); ++output) {
              parameters.synthesis_flags = (parameters.synthesis_flags & 0xFFU) |
                  packed_synthesis_fraction(synthetic_output_fraction(output));
-@@ -3905,6 +4049,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3930,6 +4074,9 @@ struct D3D12FrameSynthesizer::Impl {
                      image_description.DepthOrArraySize);
                  parameters.slice = slice;
                  parameters.view_index = view_index;
@@ -1205,7 +1193,7 @@ index 932747c..54d2a81 100644
                  const UINT descriptor_base =
                      backend == D3D12OpticalFlowBackend::nvidia
                          ? slice * kDescriptorBlockSize
-@@ -3935,7 +4082,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -3960,7 +4107,7 @@ struct D3D12FrameSynthesizer::Impl {
                      target_views[view_index].image_rect,
                      static_cast<UINT>(image_description.Width),
                      image_description.Height);
@@ -1214,7 +1202,7 @@ index 932747c..54d2a81 100644
                  clear_synthetic_marker(slot.command_list.Get(), rtv, target_views[view_index],
                      static_cast<UINT>(image_description.Width), image_description.Height, debug_marker);
              }
-@@ -4898,6 +5045,17 @@ HRESULT D3D12FrameSynthesizer::retire_previous() noexcept {
+@@ -4952,6 +5099,17 @@ HRESULT D3D12FrameSynthesizer::retire_previous() noexcept {
      }
  }
  
@@ -1233,13 +1221,12 @@ index 932747c..54d2a81 100644
      try {
          std::scoped_lock lock(mutex_);
 diff --git a/src/d3d12/d3d12_history.cpp b/src/d3d12/d3d12_history.cpp
-index e600745..a80ef91 100644
 --- a/src/d3d12/d3d12_history.cpp
 +++ b/src/d3d12/d3d12_history.cpp
-@@ -109,8 +109,12 @@ struct D3D12SwapchainHistory::Impl {
-     std::vector<ComPtr<ID3D12Resource>> source_images;
-     ComPtr<ID3D12Fence> producer_fence;
-     HANDLE fence_event{};
+@@ -116,8 +116,12 @@ struct D3D12SwapchainHistory::Impl {
+     // microsecond; a plain timeout would round up to the 15.6 ms tick.
+     HANDLE busy_event{};
+     HANDLE busy_timer{};
 -    std::array<HistorySlot, D3D12SwapchainHistory::kSlotCount> slots;
 +    // kSlotCount slots of their own, or (in place) one per source.
 +    std::vector<HistorySlot> slots;
@@ -1250,7 +1237,7 @@ index e600745..a80ef91 100644
      std::uint64_t next_serial{1};
      std::uint64_t next_fence_value{1};
      std::uint64_t next_lease_serial{1};
-@@ -191,7 +195,8 @@ struct D3D12SwapchainHistory::Impl {
+@@ -204,7 +208,8 @@ struct D3D12SwapchainHistory::Impl {
          ID3D12CommandQueue* input_queue,
          std::span<ID3D12Resource* const> inputs,
          D3D12_RESOURCE_STATES input_release_state,
@@ -1260,7 +1247,7 @@ index e600745..a80ef91 100644
          if (failure_stage != nullptr) {
              *failure_stage = D3D12HistoryInitializationStage::complete;
          }
-@@ -257,7 +262,29 @@ struct D3D12SwapchainHistory::Impl {
+@@ -270,7 +275,29 @@ struct D3D12SwapchainHistory::Impl {
          D3D12_RESOURCE_DESC history_description = source_description;
          history_description.Flags = static_cast<D3D12_RESOURCE_FLAGS>(
              history_description.Flags & ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
@@ -1290,7 +1277,7 @@ index e600745..a80ef91 100644
              HRESULT result = device->CreateCommittedResource(
                  &heap_properties,
                  D3D12_HEAP_FLAG_NONE,
-@@ -409,6 +436,9 @@ struct D3D12SwapchainHistory::Impl {
+@@ -497,6 +524,9 @@ struct D3D12SwapchainHistory::Impl {
              capture_enabled = false;
              return E_FAIL;
          }
@@ -1300,7 +1287,7 @@ index e600745..a80ef91 100644
  
          HistorySlot& slot = slots[next_slot];
          HRESULT result = prepare_slot_for_capture(slot);
-@@ -494,7 +524,9 @@ struct D3D12SwapchainHistory::Impl {
+@@ -593,7 +623,9 @@ struct D3D12SwapchainHistory::Impl {
          pending_ticket = {};
          has_pending_capture = false;
          ++next_serial;
@@ -1311,7 +1298,7 @@ index e600745..a80ef91 100644
          return S_OK;
      }
  
-@@ -580,6 +612,53 @@ struct D3D12SwapchainHistory::Impl {
+@@ -679,6 +711,53 @@ struct D3D12SwapchainHistory::Impl {
          slot.consumer_fence = completion_fence;
          slot.consumer_fence_value = completion_value;
          slot.active_lease_serial = 0;
@@ -1365,7 +1352,7 @@ index e600745..a80ef91 100644
          return S_OK;
      }
  
-@@ -681,6 +760,62 @@ HRESULT D3D12SwapchainHistory::initialize(
+@@ -780,6 +859,62 @@ HRESULT D3D12SwapchainHistory::initialize(
      }
  }
  
@@ -1427,9 +1414,8 @@ index e600745..a80ef91 100644
 +
  HRESULT D3D12SwapchainHistory::capture(
      std::uint32_t source_index,
-     D3D12HistoryCaptureTicket* ticket) noexcept {
+     D3D12HistoryCaptureTicket* ticket,
 diff --git a/src/d3d12/frame_synthesis.hlsl b/src/d3d12/frame_synthesis.hlsl
-index 2a3bce7..a261395 100644
 --- a/src/d3d12/frame_synthesis.hlsl
 +++ b/src/d3d12/frame_synthesis.hlsl
 @@ -5,6 +5,11 @@ Texture2D<uint> FlowAuxiliary : register(t3);
@@ -1444,7 +1430,7 @@ index 2a3bce7..a261395 100644
  RWTexture2D<float4> PackedColor : register(u0);
  // The NVIDIA pack is compiled twice: once for BGRA8 inputs, and once with
  // XRFG_NVIDIA_LUMA_INPUT for R8 inputs, which the engine takes as grayscale
-@@ -684,6 +689,13 @@ struct FullscreenVertex {
+@@ -719,6 +724,13 @@ struct FullscreenVertex {
  
  FullscreenVertex FullscreenTriangleVS(uint vertex_id : SV_VertexID) {
      FullscreenVertex output;
@@ -1459,10 +1445,9 @@ index 2a3bce7..a261395 100644
                       : vertex_id == 1 ? float2(-1.0, 3.0)
                                        : float2(3.0, -1.0);
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
-index 63d5c37..739a2dc 100644
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -106,6 +106,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -118,6 +118,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "submission_timing";
      case BridgeFlightOperation::adaptive_probe:
          return "adaptive_probe";
@@ -1472,13 +1457,12 @@ index 63d5c37..739a2dc 100644
          return "synthesis_frame_start_wait";
      case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index 0ff3b47..e0afd93 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -510,6 +510,15 @@ struct Dispatch {
-     // and never consumes one; it records session state transitions so a
-     // capture can say whether the runtime stopped asking for frames, and why.
-     PFN_xrPollEvent poll_event{};
+@@ -519,6 +519,15 @@ struct Dispatch {
+     // for it, the application enabled a Vulkan extension, and the layer
+     // could add XR_KHR_D3D12_enable to the instance.
+     bool vulkan_bridge{};
 +    // DCS VR Control (0008): XR_KHR_visibility_mask, best effort. Added to
 +    // the instance by the layer (`visibility_mask_added`, when the runtime
 +    // lists it and the application did not ask for it; its change events
@@ -1491,7 +1475,7 @@ index 0ff3b47..e0afd93 100644
      // Vulkan negotiation, forwarded unchanged and only recorded: see
      // BridgeFlightOperation::vulkan_negotiation.
      VulkanNegotiationDispatch vulkan{};
-@@ -529,6 +538,7 @@ struct Dispatch {
+@@ -560,6 +569,7 @@ struct Dispatch {
  }
  
  struct GeneratedFrameEndInfo;
@@ -1499,7 +1483,7 @@ index 0ff3b47..e0afd93 100644
  
  struct PresenterSubmission {
      std::uint64_t sequence{};
-@@ -1125,6 +1135,39 @@ struct SessionState {
+@@ -1192,6 +1202,39 @@ struct SessionState {
      // xrEndFrame knows to look for depth information naming one. Never
      // cleared: a strip on a frame that names none is a cheap walk.
      std::atomic<bool> has_private_depth_swapchain{false};
@@ -1539,17 +1523,17 @@ index 0ff3b47..e0afd93 100644
      // Application frames submitted on this session, counted only until the
      // delivery connection is released. Guarded by frame_call_mutex.
      std::uint32_t application_frames_submitted{};
-@@ -2130,6 +2173,9 @@ struct FrameGenerationSwapchainState {
-     std::size_t synthetic_slot{};
-     std::shared_ptr<xrfg::D3D12FrameSynthesizer> synthesizer;
-     std::shared_ptr<xrfg::SwapchainInterop> interop;
+@@ -2384,6 +2427,9 @@ struct FrameGenerationSwapchainState {
+     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> current_runtime_images;
+     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> synthetic_runtime_images;
+     std::shared_ptr<HandoverCopier> copier;
 +    // DCS VR Control (0008): the Dispatch::visibility_mask_version whose
 +    // masks the synthesizer has (0: none yet).
 +    std::uint32_t visibility_mask_version{};
  };
  
  // DCS VR Control (0004): harvested whenever the synthesizer times (with
-@@ -2317,6 +2363,37 @@ struct SwapchainState {
+@@ -2707,6 +2753,37 @@ struct SwapchainState {
      // not retried every frame. Cleared whenever the history is rebuilt, which
      // is the point at which the images themselves changed.
      bool generation_declined{};
@@ -1587,7 +1571,7 @@ index 0ff3b47..e0afd93 100644
  };
  
  void log_swapchain_eligibility(
-@@ -2981,14 +3058,55 @@ template <typename Initialize>
+@@ -3388,14 +3465,55 @@ template <typename Initialize>
              return E_INVALIDARG;
          }
          auto history = std::make_shared<xrfg::D3D12SwapchainHistory>();
@@ -1648,26 +1632,27 @@ index 0ff3b47..e0afd93 100644
          {
              std::scoped_lock lock(state->mutex);
              state->d3d12_history = std::move(history);
-@@ -4533,12 +4651,18 @@ XrResult layer_create_api_layer_instance_impl(
-     bool bridge_requested_by_ini = false;
+@@ -5105,6 +5223,9 @@ XrResult layer_create_api_layer_instance_impl(
      bool asked_d3d11 = false;
      bool asked_d3d12 = false;
+     bool asked_vulkan = false;
 +    // DCS VR Control (0008): see Dispatch::get_visibility_mask.
 +    bool asked_visibility_mask = false;
 +    bool visibility_mask_added = false;
      try {
          for (std::uint32_t index = 0; index < create_info->enabledExtensionCount; ++index) {
              const char* const extension = create_info->enabledExtensionNames[index];
-             if (extension == nullptr) continue;
-             if (std::string_view(extension) == "XR_KHR_D3D11_enable") asked_d3d11 = true;
+@@ -5113,6 +5234,9 @@ XrResult layer_create_api_layer_instance_impl(
              if (std::string_view(extension) == "XR_KHR_D3D12_enable") asked_d3d12 = true;
+             if (std::string_view(extension) == "XR_KHR_vulkan_enable" ||
+                 std::string_view(extension) == "XR_KHR_vulkan_enable2") asked_vulkan = true;
 +            if (std::string_view(extension) == "XR_KHR_visibility_mask") {
 +                asked_visibility_mask = true;
 +            }
          }
          // A game that enabled XR_KHR_D3D12_enable itself - Assetto Corsa
          // and SkyrimVR enable every graphics extension the runtime lists -
-@@ -4581,9 +4705,51 @@ XrResult layer_create_api_layer_instance_impl(
+@@ -5161,9 +5285,51 @@ XrResult layer_create_api_layer_instance_impl(
                  bridge_extension_added = true;
              }
          }
@@ -1719,7 +1704,7 @@ index 0ff3b47..e0afd93 100644
      }
  
      XrInstance created_instance = XR_NULL_HANDLE;
-@@ -4649,6 +4815,24 @@ XrResult layer_create_api_layer_instance_impl(
+@@ -5235,6 +5401,24 @@ XrResult layer_create_api_layer_instance_impl(
          return XR_ERROR_INITIALIZATION_FAILED;
      }
  
@@ -1744,7 +1729,7 @@ index 0ff3b47..e0afd93 100644
      PFN_xrGetInstanceProperties get_instance_properties = nullptr;
      if (load_function(
              next_get_instance_proc_addr,
-@@ -4974,6 +5158,13 @@ XrResult layer_create_session_impl(
+@@ -5592,6 +5776,13 @@ XrResult layer_create_session_impl(
              state->graphics_binding = SessionGraphicsBinding::d3d12;
              state->single_threaded_d3d11 = false;
              state->graphics_binding_capabilities |= 128ULL;
@@ -1758,7 +1743,7 @@ index 0ff3b47..e0afd93 100644
              bridge_binding.device = state->d3d12_device.Get();
              bridge_binding.queue = state->d3d12_queue.Get();
              // Whatever the application chained after its binding stays
-@@ -5336,6 +5527,13 @@ XrResult layer_begin_session_impl(
+@@ -6024,6 +6215,13 @@ XrResult layer_begin_session_impl(
      if (XR_SUCCEEDED(result)) {
          reset_frame_bookkeeping(state);
          reset_swapchain_bookkeeping(state);
@@ -1772,7 +1757,7 @@ index 0ff3b47..e0afd93 100644
      }
      return result;
  }
-@@ -5922,8 +6120,87 @@ XrResult layer_create_swapchain_impl(
+@@ -6653,9 +6851,88 @@ XrResult layer_create_swapchain_impl(
              (static_cast<std::uint64_t>(bridge->path()) << 32) | runtime_count,
              (static_cast<std::uint64_t>(bridge->shared_format()) << 32) |
                  static_cast<std::uint64_t>(static_cast<std::uint32_t>(create_info->format)));
@@ -1845,6 +1830,7 @@ index 0ff3b47..e0afd93 100644
 +        }
          if (bridge->path() == xrfg::D3D11BridgePath::depth_private) {
              state->has_private_depth_swapchain.store(true, std::memory_order_release);
+             swapchain_state->private_depth = true;
 +        } else {
 +            // DCS VR Control (0008): see SessionState::bridged_swapchains.
 +            std::scoped_lock bridged_lock(state->bridged_swapchains_mutex);
@@ -1860,9 +1846,9 @@ index 0ff3b47..e0afd93 100644
          }
          std::scoped_lock lock(swapchain_state->mutex);
          swapchain_state->bridge = std::move(bridge);
-@@ -5998,6 +6275,38 @@ XrResult layer_destroy_swapchain_impl(XrSwapchain swapchain) {
-         std::scoped_lock lock(state->mutex);
+@@ -6813,6 +7090,38 @@ XrResult layer_destroy_swapchain_impl(XrSwapchain swapchain) {
          state->bridge.reset();
+         state->vulkan_bridge.reset();
      }
 +    {
 +        // DCS VR Control (0008): see SessionState::bridged_swapchains.
@@ -1899,9 +1885,9 @@ index 0ff3b47..e0afd93 100644
      const XrResult result = state->session->dispatch->destroy_swapchain(swapchain);
      if (XR_SUCCEEDED(result)) {
          std::scoped_lock lock(g_state_mutex);
-@@ -6452,6 +6761,117 @@ XrResult layer_enumerate_swapchain_images_impl(
-     return result;
- }
+@@ -7303,6 +7612,117 @@ XrResult layer_enumerate_swapchain_images_impl(
+ void release_pending_bridge_image_locked(
+     const std::shared_ptr<SwapchainState>& state) noexcept;
  
 +// DCS VR Control (0008): xrAcquireSwapchainImage on a lazy swapchain. The
 +// next image in turn that the application does not hold already - and, with
@@ -2017,10 +2003,10 @@ index 0ff3b47..e0afd93 100644
  XrResult layer_acquire_swapchain_image_impl(
      XrSwapchain swapchain,
      const XrSwapchainImageAcquireInfo* acquire_info,
-@@ -6462,6 +6882,11 @@ XrResult layer_acquire_swapchain_image_impl(
-     }
- 
-     std::scoped_lock call_lock(state->call_mutex);
+@@ -7319,6 +7739,11 @@ XrResult layer_acquire_swapchain_image_impl(
+     // image rendered, the next acquired before the frame ends - would
+     // otherwise hold two images the runtime counts as unreleased.
+     release_pending_bridge_image_locked(state);
 +    if (state->lazy.active) {
 +        // DCS VR Control (0008): a lazy swapchain's images are the bridge's
 +        // shared textures, handed out here in turn.
@@ -2029,10 +2015,10 @@ index 0ff3b47..e0afd93 100644
      const XrResult result = with_runtime_entry(state->session.get(), [&] {
          return state->session->dispatch->acquire_swapchain_image(
              swapchain, acquire_info, index);
-@@ -6492,6 +6917,24 @@ XrResult layer_wait_swapchain_image_impl(
-     }
- 
-     std::scoped_lock call_lock(state->call_mutex);
+@@ -7352,6 +7777,24 @@ XrResult layer_wait_swapchain_image_impl(
+     // As at the acquire: the runtime refuses a wait while an image it waited
+     // is still unreleased.
+     release_pending_bridge_image_locked(state);
 +    if (state->lazy.active) {
 +        // DCS VR Control (0008): nothing of the runtime's to wait for; the
 +        // application's context waits, on the GPU, for the layer's reads.
@@ -2054,7 +2040,7 @@ index 0ff3b47..e0afd93 100644
      const XrResult result = with_runtime_entry(state->session.get(), [&] {
          return state->session->dispatch->wait_swapchain_image(
              swapchain, wait_info);
-@@ -6542,6 +6985,11 @@ XrResult layer_release_swapchain_image_impl(
+@@ -7446,6 +7889,11 @@ XrResult release_swapchain_image_locked(
              }
          }
      }
@@ -2066,7 +2052,7 @@ index 0ff3b47..e0afd93 100644
      std::unique_lock<std::mutex> gpu_lock;
      if (state->session->manual_control.stop_requested() || !state->session->menu_enabled) {
          // Preserve the application's acquire/wait/release bookkeeping, but
-@@ -6639,10 +7087,13 @@ XrResult layer_release_swapchain_image_impl(
+@@ -7576,10 +8024,13 @@ XrResult release_swapchain_image_locked(
      mark_application_release(state->session.get());
      XrResult result = XR_ERROR_RUNTIME_FAILURE;
      try {
@@ -2084,8 +2070,8 @@ index 0ff3b47..e0afd93 100644
      } catch (...) {
          if (pending_capture && history) {
              history->discard(*pending_capture);
-@@ -6697,6 +7148,103 @@ XrResult layer_release_swapchain_image_impl(
-     return result;
+@@ -7846,6 +8297,103 @@ void capture_pending_end_frame_images(
+     }
  }
  
 +// DCS VR Control (0008): the session's visibility masks, fetched from the
@@ -2188,7 +2174,7 @@ index 0ff3b47..e0afd93 100644
  struct ProjectionLayerCopy {
      std::uint32_t layer_index{};
      XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-@@ -6713,6 +7261,374 @@ using OwnedCompositionLayer = std::variant<
+@@ -7862,6 +8410,374 @@ using OwnedCompositionLayer = std::variant<
      XrCompositionLayerPassthroughHTC,
      XrCompositionLayerPassthroughANDROID>;
  
@@ -2563,7 +2549,7 @@ index 0ff3b47..e0afd93 100644
  // A private image left acquired so that it is handed to the runtime by
  // whoever hands its frame over, together with the join that has to precede
  // that release on the application's queue. See prepare_frame_generation.
-@@ -7168,7 +8084,8 @@ void drain_triple_slack(
+@@ -8416,7 +9332,8 @@ void drain_triple_slack(
              continue;
          }
          // DCS VR Control (0007): with the deeper pipeline a period of it is
@@ -2573,7 +2559,7 @@ index 0ff3b47..e0afd93 100644
          const auto period = static_cast<xrfg::latency::Nanoseconds>(
              state.presenter_display_period);
          fill_triple_release_report(
-@@ -7176,7 +8093,7 @@ void drain_triple_slack(
+@@ -8424,7 +9341,7 @@ void drain_triple_slack(
                  state.triple_release,
                  period,
                  xrfg::latency::triple_slack_for_tuner(
@@ -2582,7 +2568,7 @@ index 0ff3b47..e0afd93 100644
              report);
      }
  }
-@@ -7988,6 +8905,12 @@ void continuous_presenter_main(
+@@ -9249,6 +10166,12 @@ void continuous_presenter_main(
          bool depth_slot = false;
          std::uint32_t depth_inserted = 0;
          std::uint32_t depth_slots = 0;
@@ -2595,7 +2581,7 @@ index 0ff3b47..e0afd93 100644
          // Same, for the vsync lock. Recorded after presenter_mutex is released:
          // the presenter thread takes it every frame and logging under it has
          // deadlocked the layer twice.
-@@ -8076,9 +8999,30 @@ void continuous_presenter_main(
+@@ -9334,9 +10257,30 @@ void continuous_presenter_main(
                      triple_depth_slot_due_locked(*state);
                  if (depth_slot) {
                      const bool taken = state->triple_depth.take(true, true, true);
@@ -2627,7 +2613,7 @@ index 0ff3b47..e0afd93 100644
                  }
                  const bool judge_leader = !depth_slot &&
                      state->triple_leader_due &&
-@@ -8226,8 +9170,11 @@ void continuous_presenter_main(
+@@ -9484,8 +10428,11 @@ void continuous_presenter_main(
                                  // hand-over is a first synthetic. SteamVR's
                                  // pace looks at it the margin before that;
                                  // elsewhere it is judged at its own slot.
@@ -2640,7 +2626,7 @@ index 0ff3b47..e0afd93 100644
                                      // DCS VR Control (0007): with the deeper
                                      // pipeline the look is taken here, a
                                      // period before the first synthetic's
-@@ -8333,6 +9280,16 @@ void continuous_presenter_main(
+@@ -9591,6 +10538,16 @@ void continuous_presenter_main(
                          state->presenter_display_period / 1000),
                      depth_inserted);
              }
@@ -2657,7 +2643,7 @@ index 0ff3b47..e0afd93 100644
              if (held_age_ns >= 0) {
                  xrfg::bridge_flight_logger().event(
                      xrfg::BridgeFlightOperation::presenter_transition,
-@@ -8602,6 +9559,11 @@ void continuous_presenter_main(
+@@ -9914,6 +10871,11 @@ void continuous_presenter_main(
              // (0 for a repeat), c 2 synthetic, 1 real, 0 repeat.
              // The binding queue must have run past the application's release
              // of every image of its own that this frame names.
@@ -2669,7 +2655,7 @@ index 0ff3b47..e0afd93 100644
              join_runtime_queue_to_application(
                  state.get(),
                  request ? request->app_release_value
-@@ -8621,8 +9583,8 @@ void continuous_presenter_main(
+@@ -9933,8 +10895,8 @@ void continuous_presenter_main(
                      // nothing. It is a submission and not a frame, so the
                      // overlay must not count it.
                      ? state->fps_overlay->end_frame(
@@ -2680,7 +2666,7 @@ index 0ff3b47..e0afd93 100644
              });
              state->presenter_last_end_returned_at =
                  std::chrono::steady_clock::now();
-@@ -9535,8 +10497,21 @@ void continuous_presenter_main(
+@@ -10850,8 +11812,21 @@ void continuous_presenter_main(
          state->late_skip.reset();
          state->late_skip_active = false;
          // DCS VR Control (0007): a new presenter's queue has no depth yet.
@@ -2702,7 +2688,7 @@ index 0ff3b47..e0afd93 100644
          state->presenter_stop_requested = false;
          state->presenter_active = true;
          state->presenter_thread = std::thread(continuous_presenter_main, state);
-@@ -10326,6 +11301,11 @@ build_reprojection_views(
+@@ -11618,6 +12593,11 @@ build_reprojection_views(
              static_cast<std::uint32_t>(source.subImage.imageRect.extent.height),
          };
          destination.array_slice = source.subImage.imageArrayIndex;
@@ -2714,7 +2700,7 @@ index 0ff3b47..e0afd93 100644
      }
      return output;
  }
-@@ -10851,6 +11831,22 @@ struct PreparedProjectionFrame {
+@@ -12162,6 +13142,22 @@ struct PreparedProjectionFrame {
                  submit_result =
                      generation->interop->prepare_synthesis();
              }
@@ -2737,7 +2723,7 @@ index 0ff3b47..e0afd93 100644
              if (!generation->interop || SUCCEEDED(submit_result)) {
                  submit_result = request_pair
                                      ? generation->synthesizer->submit_pair(
-@@ -11426,12 +12422,16 @@ struct InternalCycleResult {
+@@ -12757,12 +13753,16 @@ struct InternalCycleResult {
          handle_value(state->handle),
          static_cast<std::uint64_t>(submitted.displayTime),
          submitted.layerCount);
@@ -2756,7 +2742,7 @@ index 0ff3b47..e0afd93 100644
      });
      xrfg::bridge_flight_logger().end(
          end_token,
-@@ -12025,25 +13025,115 @@ void note_bridged_submissions(
+@@ -13468,25 +14468,115 @@ void note_bridged_submissions(
  // gone to the runtime rewritten (update_bridged_copy_deferral), so a release
  // that turns out to belong to a pass-through frame is always caught up here
  // before that frame goes down.
@@ -2882,7 +2868,7 @@ index 0ff3b47..e0afd93 100644
                  continue;
              }
              if (stop_deferring && bridge->defers_copies()) {
-@@ -12052,13 +13142,12 @@ void catch_up_bridged_copies(
+@@ -13495,13 +14585,12 @@ void catch_up_bridged_copies(
                  xrfg::bridge_flight_logger().event(
                      xrfg::BridgeFlightOperation::d3d11_bridge,
                      7,
@@ -2898,7 +2884,7 @@ index 0ff3b47..e0afd93 100644
                  continue;
              }
              const HRESULT result = bridge->catch_up();
-@@ -12068,7 +13157,7 @@ void catch_up_bridged_copies(
+@@ -13511,7 +14600,7 @@ void catch_up_bridged_copies(
                  xrfg::bridge_flight_logger().event(
                      xrfg::BridgeFlightOperation::d3d11_bridge,
                      4,
@@ -2907,7 +2893,7 @@ index 0ff3b47..e0afd93 100644
                      1,
                      static_cast<std::uint64_t>(static_cast<std::uint32_t>(result)));
              }
-@@ -12093,27 +13182,21 @@ void update_bridged_copy_deferral(
+@@ -13536,27 +14625,21 @@ void update_bridged_copy_deferral(
      const std::shared_ptr<SessionState>& state,
      const XrFrameEndInfo* output) noexcept {
      try {
@@ -2944,7 +2930,7 @@ index 0ff3b47..e0afd93 100644
              const bool defer = output_known &&
                  std::find(named.begin(), named.end(), handle) == named.end();
              if (defer != bridge->defers_copies()) {
-@@ -12132,6 +13215,103 @@ void update_bridged_copy_deferral(
+@@ -13575,6 +14658,103 @@ void update_bridged_copy_deferral(
      }
  }
  
@@ -3048,7 +3034,7 @@ index 0ff3b47..e0afd93 100644
  // Follows the tray's "3X Frame Gen" switch while the session runs. Called at
  // the top of the application's xrEndFrame, under frame_call_mutex, before
  // this frame is prepared.
-@@ -12380,6 +13560,24 @@ void apply_live_frame_multiplier(
+@@ -13823,6 +15003,24 @@ void apply_live_frame_multiplier(
              XR_FAILED(wait_for_presenter_idle(state))) {
              // Nothing changed; the next call decides again (and a manual
              // change is still seen, its ini value not having been taken).
@@ -3073,7 +3059,7 @@ index 0ff3b47..e0afd93 100644
              return;
          }
          if (reason == AdaptiveReason::manual) {
-@@ -12726,6 +13924,9 @@ XrResult layer_end_frame_impl(
+@@ -14223,6 +15421,9 @@ XrResult layer_end_frame_impl(
      // D3D11 bridge: copies skipped for swapchains no frame named are caught
      // up here if this one names them, before the counter below is taken.
      note_bridged_submissions(state, end_info);
@@ -3083,7 +3069,7 @@ index 0ff3b47..e0afd93 100644
      // Every image of the application's that this frame names was released
      // before this call, so the counter as it stands now covers them all.
      {
-@@ -12860,7 +14061,8 @@ XrResult layer_end_frame_impl(
+@@ -14368,7 +15569,8 @@ XrResult layer_end_frame_impl(
              // DCS VR Control (0006): the application's own composition goes
              // down: whatever a release left uncopied while generation ran is
              // copied first, and releases copy again until it runs again.
@@ -3093,7 +3079,7 @@ index 0ff3b47..e0afd93 100644
              xrfg::bridge_flight_logger().event(
                  xrfg::BridgeFlightOperation::generation_prepare,
                  static_cast<std::int64_t>(reason),
-@@ -12876,12 +14078,17 @@ XrResult layer_end_frame_impl(
+@@ -14384,12 +15586,17 @@ XrResult layer_end_frame_impl(
                  join_runtime_queue_to_application(
                      state.get(), state->app_end_frame_release_value);
              }
@@ -3113,7 +3099,7 @@ index 0ff3b47..e0afd93 100644
                    });
              xrfg::bridge_flight_logger().end(
                  end_token,
-@@ -13523,7 +14730,7 @@ XrResult layer_end_frame_impl(
+@@ -15073,7 +16280,7 @@ XrResult layer_end_frame_impl(
              }
          } else {
              // DCS VR Control (0006): the application's own composition.
@@ -3122,19 +3108,25 @@ index 0ff3b47..e0afd93 100644
              result = submit_borrowed_to_presenter();
          }
      } else {
-@@ -13532,13 +14739,18 @@ XrResult layer_end_frame_impl(
+@@ -15082,7 +16289,8 @@ XrResult layer_end_frame_impl(
          catch_up_bridged_copies(
              state,
              submitted_end_info == end_info ? nullptr : submitted_end_info,
 -            submitted_end_info == end_info);
 +            submitted_end_info == end_info,
 +            submitted_end_info);
-+        // DCS VR Control (0008): see translate_lazy_swapchains.
+         join_runtime_queue_to_application(
+             state.get(), state->app_end_frame_release_value);
+         if (!run_private_releases(state.get(), first_generated.pending_releases)) {
+@@ -15109,10 +16317,15 @@ XrResult layer_end_frame_impl(
+             extra_ready = false;
+             prepare_reason = GenerationPrepareReason::private_release_failed;
+         }
++        // DCS VR Control (0008): see translate_lazy_swapchains. After the
++        // hand-over above, which can fall back to the application's frame.
 +        LazyTranslation lazy_translation;
 +        const XrFrameEndInfo* const downstream =
 +            translate_lazy_swapchains(*state, submitted_end_info, lazy_translation);
-         join_runtime_queue_to_application(
-             state.get(), state->app_end_frame_release_value);
          result = with_runtime_entry(state, [&] {
              return state->fps_overlay
 -                ? state->fps_overlay->end_frame(submitted_end_info, pair_ready)
@@ -3144,7 +3136,7 @@ index 0ff3b47..e0afd93 100644
          });
      }
      const auto first_end_elapsed =
-@@ -13990,7 +15202,28 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_poll_event(
+@@ -15593,7 +16806,28 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_poll_event(
          if (!dispatch || dispatch->poll_event == nullptr) {
              return XR_ERROR_FUNCTION_UNSUPPORTED;
          }
@@ -3175,7 +3167,6 @@ index 0ff3b47..e0afd93 100644
          // this costs one comparison on the overwhelming majority of calls.
          if (result == XR_SUCCESS && event_data != nullptr &&
 diff --git a/tests/d3d11_bridge_tests.cpp b/tests/d3d11_bridge_tests.cpp
-index ea226db..563d8bc 100644
 --- a/tests/d3d11_bridge_tests.cpp
 +++ b/tests/d3d11_bridge_tests.cpp
 @@ -672,6 +672,82 @@ void test_deferred_copies(const Devices& devices) {
@@ -3270,10 +3261,9 @@ index ea226db..563d8bc 100644
      if (g_failures != 0) {
          std::cerr << g_failures << " D3D11 bridge check(s) failed\n";
 diff --git a/tests/d3d12_history_tests.cpp b/tests/d3d12_history_tests.cpp
-index 85666d9..5b9f759 100644
 --- a/tests/d3d12_history_tests.cpp
 +++ b/tests/d3d12_history_tests.cpp
-@@ -924,7 +924,10 @@ void get_copy_layouts(
+@@ -925,7 +925,10 @@ void get_copy_layouts(
  void upload_pattern(
      D3D12WarpFixture& fixture,
      ID3D12Resource* texture,
@@ -3285,7 +3275,7 @@ index 85666d9..5b9f759 100644
      require(texture != nullptr, "upload target is null");
      const D3D12_RESOURCE_DESC description = texture->GetDesc();
      std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, kEyeCount> layouts{};
-@@ -976,7 +979,9 @@ void upload_pattern(
+@@ -977,7 +980,9 @@ void upload_pattern(
              texture,
              D3D12_RESOURCE_STATE_RENDER_TARGET,
              D3D12_RESOURCE_STATE_COPY_DEST);
@@ -3296,7 +3286,7 @@ index 85666d9..5b9f759 100644
          for (UINT eye = 0; eye < kEyeCount; ++eye) {
              D3D12_TEXTURE_COPY_LOCATION source{};
              source.pResource = upload.Get();
-@@ -993,7 +998,9 @@ void upload_pattern(
+@@ -994,7 +999,9 @@ void upload_pattern(
              texture,
              D3D12_RESOURCE_STATE_COPY_DEST,
              D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -3307,7 +3297,7 @@ index 85666d9..5b9f759 100644
      });
  }
  
-@@ -1937,6 +1944,306 @@ void test_depth_private_history_allows_shader_resource_views(D3D12WarpFixture& f
+@@ -2051,6 +2058,306 @@ void test_depth_private_history_allows_shader_resource_views(D3D12WarpFixture& f
  // pixels - the failure this configuration actually had, where every timing
  // record said the frame was generated, paced and complete and the runtime
  // still displayed something else.
@@ -3614,7 +3604,7 @@ index 85666d9..5b9f759 100644
  void test_synthesis_on_a_dedicated_queue(D3D12WarpFixture& fixture) {
      D3D12_COMMAND_QUEUE_DESC queue_description{};
      queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-@@ -4001,6 +4308,8 @@ int main() {
+@@ -4116,6 +4423,8 @@ int main() {
          test_depth_capture_path(fixture);
          test_depth_private_history_allows_shader_resource_views(fixture);
          test_rolling_frame_synthesizer(fixture);
@@ -3623,7 +3613,7 @@ index 85666d9..5b9f759 100644
          test_synthesis_on_a_dedicated_queue(fixture);
          test_double_wide_single_slice_views(fixture);
          test_stereo_motion_synthesis_beats_same_pixel_blend(fixture);
-@@ -4058,6 +4367,14 @@ int main() {
+@@ -4173,6 +4482,14 @@ int main() {
              nvidia_options.bidirectional = bidirectional_length == 1 &&
                  bidirectional[0] == '1';
              D3D12WarpFixture nvidia_fixture(true);
@@ -3639,7 +3629,6 @@ index 85666d9..5b9f759 100644
                  nvidia_fixture,
                  xrfg::D3D12OpticalFlowBackend::nvidia,
 diff --git a/tests/latency_control_tests.cpp b/tests/latency_control_tests.cpp
-index dfa77d0..04f53aa 100644
 --- a/tests/latency_control_tests.cpp
 +++ b/tests/latency_control_tests.cpp
 @@ -2,6 +2,7 @@
@@ -3815,10 +3804,9 @@ index dfa77d0..04f53aa 100644
      {
          // Clearly impossible: a median of 32 ms is more than 1.4 x two
 diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
-index 2fe6177..264a679 100644
 --- a/tests/layer_call_chain.cpp
 +++ b/tests/layer_call_chain.cpp
-@@ -123,6 +123,19 @@ std::atomic<bool> g_bridge_session_bound{false};
+@@ -142,6 +142,19 @@ std::atomic<bool> g_bridge_session_bound{false};
  // swapchain. The fake runtime checks that at every such submission: the image
  // the application released last holds what it painted.
  std::atomic<int> g_bridge_last_index{-1};
@@ -3838,7 +3826,7 @@ index 2fe6177..264a679 100644
  std::atomic<int> g_bridge_last_red{-1};
  std::atomic<std::uint32_t> g_bridge_named_checks{0};
  std::atomic<std::uint32_t> g_bridge_named_stale{0};
-@@ -211,6 +224,13 @@ bool g_late_skip_expected = true;
+@@ -237,6 +250,13 @@ bool g_late_skip_expected = true;
  // what was shown here.
  bool g_triple_deep_mode = false;
  int g_triple_deep_jitter_us = 0;
@@ -3852,23 +3840,24 @@ index 2fe6177..264a679 100644
  int g_simulated_render_us = 0;
  // dcs-throughput-down / dcs-throughput-gpu (DCS VR Control, 0004):
  // dcs-adaptive's shape, starting in 3X, with the application's CPU and GPU
-@@ -523,8 +543,13 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_enumerate_instance_extension_properties(
+@@ -566,8 +586,14 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_enumerate_instance_extension_properties(
      // other D3D11 mode then runs the direct D3D11 path - the one a runtime
      // without D3D12 gets, and the one d3d11_bridge=0 selects - so both stay
      // covered.
 -    constexpr const char* kNames[] = {"XR_KHR_D3D11_enable", "XR_KHR_D3D12_enable"};
--    const std::uint32_t listed = g_d3d11_bridge_mode ? 2U : 1U;
+-    const std::uint32_t listed = (g_d3d11_bridge_mode || g_vulkan_bridge_mode) ? 2U : 1U;
 +    // DCS VR Control (0008): and XR_KHR_visibility_mask everywhere, which the
 +    // layer enables itself for its generated frames' final draw.
-+    const std::array<const char*, 3> names = g_d3d11_bridge_mode
++    const bool lists_d3d12 = g_d3d11_bridge_mode || g_vulkan_bridge_mode;
++    const std::array<const char*, 3> names = lists_d3d12
 +        ? std::array<const char*, 3>{
 +              "XR_KHR_D3D11_enable", "XR_KHR_D3D12_enable", "XR_KHR_visibility_mask"}
 +        : std::array<const char*, 3>{"XR_KHR_D3D11_enable", "XR_KHR_visibility_mask", ""};
-+    const std::uint32_t listed = g_d3d11_bridge_mode ? 3U : 2U;
++    const std::uint32_t listed = lists_d3d12 ? 3U : 2U;
      *count = listed;
      if (capacity == 0 || properties == nullptr) {
          return XR_SUCCESS;
-@@ -533,13 +558,54 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_enumerate_instance_extension_properties(
+@@ -576,13 +602,54 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_enumerate_instance_extension_properties(
          return XR_ERROR_SIZE_INSUFFICIENT;
      }
      for (std::uint32_t index = 0; index < listed; ++index) {
@@ -3924,7 +3913,7 @@ index 2fe6177..264a679 100644
  XRAPI_ATTR XrResult XRAPI_CALL fake_get_d3d12_graphics_requirements(
      XrInstance,
      XrSystemId,
-@@ -1007,7 +1073,8 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_end_frame(
+@@ -1062,7 +1129,8 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_end_frame(
      }
      // DCS VR Control (0006): see g_bridge_named_stale.
      if (g_d3d11_bridge_mode && record.target == SubmittedTarget::original) {
@@ -3934,7 +3923,7 @@ index 2fe6177..264a679 100644
          const int expected = g_bridge_last_red.load(std::memory_order_acquire);
          if (index >= 0 && expected >= 0 &&
              static_cast<std::size_t>(index) < g_application_swapchain_images.size()) {
-@@ -1139,8 +1206,21 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_create_swapchain(
+@@ -1208,8 +1276,21 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_create_swapchain(
          *swapchain = g_application_unused_swapchain;
          return XR_SUCCESS;
      }
@@ -3957,7 +3946,7 @@ index 2fe6177..264a679 100644
      if (g_split_eye_mode) {
          const bool private_info_valid =
              create_info != nullptr &&
-@@ -1344,6 +1424,9 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_poll_event(
+@@ -1434,6 +1515,9 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_poll_event(
  }
  
  XRAPI_ATTR XrResult XRAPI_CALL fake_destroy_swapchain(XrSwapchain swapchain) {
@@ -3967,7 +3956,7 @@ index 2fe6177..264a679 100644
      g_swapchain_destroyed.store(true, std::memory_order_release);
      g_destroy_swapchain_calls.fetch_add(1, std::memory_order_relaxed);
      if (g_swapchain_budget_mode &&
-@@ -1482,9 +1565,12 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_acquire_swapchain_image(
+@@ -1572,9 +1656,12 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_acquire_swapchain_image(
      if (g_acquire_ahead_active.load(std::memory_order_acquire)) {
          // A real ring: the application holds two images at once.
          *index = g_acquire_ahead_calls.fetch_add(1, std::memory_order_relaxed) % 3U;
@@ -3980,7 +3969,7 @@ index 2fe6177..264a679 100644
      return XR_SUCCESS;
  }
  
-@@ -1518,6 +1604,9 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_release_swapchain_image(
+@@ -1608,6 +1695,9 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_release_swapchain_image(
          return XR_SUCCESS;
      }
      g_application_release_calls.fetch_add(1, std::memory_order_relaxed);
@@ -3990,7 +3979,7 @@ index 2fe6177..264a679 100644
      if (!g_log_path.empty()) {
          std::ofstream stream(g_log_path, std::ios::out | std::ios::app);
          stream << "[XRFG-FAKE] downstream release entered\n";
-@@ -1571,6 +1660,7 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_get_instance_proc_addr(
+@@ -1661,6 +1751,7 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_get_instance_proc_addr(
      XRFG_FAKE_FUNCTION("xrCreateSession", fake_create_session)
      XRFG_FAKE_FUNCTION("xrEnumerateInstanceExtensionProperties", fake_enumerate_instance_extension_properties)
      XRFG_FAKE_FUNCTION("xrGetD3D12GraphicsRequirementsKHR", fake_get_d3d12_graphics_requirements)
@@ -3998,16 +3987,16 @@ index 2fe6177..264a679 100644
      XRFG_FAKE_FUNCTION("xrDestroySession", fake_destroy_session)
      XRFG_FAKE_FUNCTION("xrBeginSession", fake_begin_session)
      XRFG_FAKE_FUNCTION("xrEndSession", fake_end_session)
-@@ -2414,7 +2504,7 @@ int main(int argc, char** argv) {
-             "dcs-throughput-gpu|d3d11-bridge|"
-             "d3d11-bridge-acquire-ahead|d3d11-bridge-unsubmitted|"
+@@ -2504,7 +2595,7 @@ int main(int argc, char** argv) {
+             "dcs-throughput-gpu|d3d11-bridge|d3d11-bridge-acquire-ahead|"
+             "d3d11-bridge-late-paint|d3d11-bridge-unsubmitted|"
              "d3d11-bridge-fallback|dcs-late-skip|dcs-triple-deep|"
--            "dcs-triple-deep-jitter]\n";
-+            "dcs-triple-deep-jitter|dcs-triple-deep-quad]\n";
+-            "dcs-triple-deep-jitter|steamvr-own-time]\n";
++            "dcs-triple-deep-jitter|dcs-triple-deep-quad|steamvr-own-time]\n";
          return EXIT_FAILURE;
      }
      g_dcs_d3d11_mode = argc == 4 && std::strcmp(argv[3], "dcs-d3d11") == 0;
-@@ -2433,7 +2523,9 @@ int main(int argc, char** argv) {
+@@ -2525,7 +2616,9 @@ int main(int argc, char** argv) {
      {
          const bool steady = argc == 4 && std::strcmp(argv[3], "dcs-triple-deep") == 0;
          const bool jitter = argc == 4 && std::strcmp(argv[3], "dcs-triple-deep-jitter") == 0;
@@ -4018,16 +4007,16 @@ index 2fe6177..264a679 100644
          g_triple_deep_jitter_us = jitter ? 3000 : 0;
      }
      {
-@@ -2630,7 +2722,7 @@ int main(int argc, char** argv) {
+@@ -2744,7 +2837,7 @@ int main(int argc, char** argv) {
          std::uint32_t count = 0;
          const auto enumerate = reinterpret_cast<PFN_xrEnumerateInstanceExtensionProperties>(probe);
          if (XR_FAILED(enumerate(nullptr, 0, &count, nullptr)) ||
--            count != (g_d3d11_bridge_mode ? 2U : 1U)) {
-+            count != (g_d3d11_bridge_mode ? 3U : 2U)) { // 0008: + visibility mask
+-            count != ((g_d3d11_bridge_mode || g_vulkan_bridge_mode) ? 2U : 1U)) {
++            count != ((g_d3d11_bridge_mode || g_vulkan_bridge_mode) ? 3U : 2U)) { // 0008: + visibility mask
              std::cerr << "null-instance extension enumeration did not reach the runtime\n";
              return EXIT_FAILURE;
          }
-@@ -3008,6 +3100,8 @@ int main(int argc, char** argv) {
+@@ -3124,6 +3217,8 @@ int main(int argc, char** argv) {
      if (XR_FAILED(create_swapchain(session, &swapchain_info, &swapchain))) {
          return EXIT_FAILURE;
      }
@@ -4036,7 +4025,7 @@ index 2fe6177..264a679 100644
      // d3d11-bridge: a depth swapchain in the packed format, which the
      // bridge cannot share. The creation must succeed, the application must
      // get D3D11 textures it can bind as depth, and the depth information
-@@ -3127,12 +3221,52 @@ int main(int argc, char** argv) {
+@@ -3243,12 +3338,52 @@ int main(int argc, char** argv) {
              static_cast<std::uint32_t>(swapchain_images.size()),
              &image_count,
              full_image_headers)) ||
@@ -4090,7 +4079,7 @@ index 2fe6177..264a679 100644
      g_fail_next_release.store(true, std::memory_order_release);
      if (XR_FAILED(acquire_image(swapchain, &acquire_info, &acquired_index)) || acquired_index != 2 ||
          XR_FAILED(wait_image(swapchain, &image_wait_info)) ||
-@@ -3187,6 +3321,7 @@ int main(int argc, char** argv) {
+@@ -3303,6 +3438,7 @@ int main(int argc, char** argv) {
          !wait_for_queue_idle()) {
          return EXIT_FAILURE;
      }
@@ -4098,7 +4087,7 @@ index 2fe6177..264a679 100644
  
      XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
      XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
-@@ -3291,8 +3426,9 @@ int main(int argc, char** argv) {
+@@ -3407,8 +3543,9 @@ int main(int argc, char** argv) {
          XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
          frame_end_info.displayTime = display_time;
          frame_end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -4110,7 +4099,7 @@ index 2fe6177..264a679 100644
          frame_end_info.layers = layers;
          // SteamVR throttles the *inline* second cycle, not the application's
          // own wait. Mark the window so the fake runtime can tell them apart by
-@@ -3557,7 +3693,7 @@ int main(int argc, char** argv) {
+@@ -3673,7 +3810,7 @@ int main(int argc, char** argv) {
              std::uint32_t unused_count = 0;
              frame_sequence_succeeded =
                  XR_SUCCEEDED(create_swapchain(session, &unused_info, &unused_swapchain)) &&
@@ -4119,7 +4108,29 @@ index 2fe6177..264a679 100644
                  XR_SUCCEEDED(enumerate_images(
                      unused_swapchain,
                      static_cast<std::uint32_t>(unused_images.size()),
-@@ -3642,6 +3778,11 @@ int main(int argc, char** argv) {
+@@ -3733,11 +3870,19 @@ int main(int argc, char** argv) {
+         };
+         // DCS VR Control (0006): what the application releases next, for the
+         // fake runtime's check at a submission naming its swapchain.
+-        auto note_bridge_release = [&](std::uint8_t red) {
++        auto note_bridge_release = [&](std::uint8_t red, int index) {
+             if (g_d3d11_bridge_mode) {
+                 g_bridge_last_index.store(
+                     static_cast<int>(acquired_index), std::memory_order_release);
+-                g_bridge_last_red.store(red, std::memory_order_release);
++                // d3d11-bridge-late-paint: what reaches the runtime is the
++                // late drawing once releases wait for xrEndFrame (from the
++                // second frame), and always on a lazy swapchain (DCS Control
++                // 0008), whose runtime image is written at xrEndFrame.
++                g_bridge_last_red.store(
++                    g_late_paint_mode && (index >= 1 || g_bridge_lazy)
++                        ? static_cast<std::uint8_t>(red + 1)
++                        : red,
++                    std::memory_order_release);
+             }
+             return true;
+         };
+@@ -3764,6 +3909,11 @@ int main(int argc, char** argv) {
          // as the application's own whose release reached the runtime.
          int deferred_frames = 0;
          int passthrough_frames = 0;
@@ -4131,7 +4142,7 @@ index 2fe6177..264a679 100644
          for (int index = 0; index < frame_count; ++index) {
              const auto red = static_cast<std::uint8_t>(40 + index * 20);
              const int gap_index = index - kUnsubmittedBefore;
-@@ -3662,6 +3803,12 @@ int main(int argc, char** argv) {
+@@ -3784,6 +3934,12 @@ int main(int argc, char** argv) {
                      // Past the structural quarantine.
                      std::this_thread::sleep_for(std::chrono::milliseconds(1100));
                  }
@@ -4144,17 +4155,26 @@ index 2fe6177..264a679 100644
              }
              std::size_t records_before = 0;
              {
-@@ -3704,6 +3851,9 @@ int main(int argc, char** argv) {
-             // fake runtime checks the same at the submission itself.
-             if (g_d3d11_bridge_mode && frame_sequence_succeeded) {
+@@ -3801,7 +3957,7 @@ int main(int argc, char** argv) {
+                  (XR_SUCCEEDED(acquire_image(depth_swapchain, &acquire_info, &depth_index)) &&
+                   XR_SUCCEEDED(wait_image(depth_swapchain, &image_wait_info)) &&
+                   XR_SUCCEEDED(release_image(depth_swapchain, &release_info)))) &&
+-                note_bridge_release(red) &&
++                note_bridge_release(red, index) &&
+                 XR_SUCCEEDED(release_image(swapchain, &release_info)) &&
+                 (!g_late_paint_mode ||
+                  paint_d3d11_image(
+@@ -3831,6 +3987,9 @@ int main(int argc, char** argv) {
+             // at the submission itself.
+             if ((g_d3d11_bridge_mode || g_vulkan_bridge_mode) && frame_sequence_succeeded) {
                  bool generated = false;
 +                // DCS VR Control (0008): a submission named the application's
 +                // swapchain itself.
 +                bool named_directly = false;
-                 {
+                 if (g_d3d11_bridge_mode) {
                      std::scoped_lock lock(g_end_records_mutex);
                      for (std::size_t record = records_before;
-@@ -3711,17 +3861,44 @@ int main(int argc, char** argv) {
+@@ -3838,20 +3997,47 @@ int main(int argc, char** argv) {
                          generated = generated ||
                              g_end_records[record].target == SubmittedTarget::current ||
                              g_end_records[record].target == SubmittedTarget::synthetic;
@@ -4163,6 +4183,10 @@ index 2fe6177..264a679 100644
                      }
                  }
                  std::uint8_t found = 0;
+-                const auto expected = g_late_paint_mode && index >= 1
++                const auto expected = g_late_paint_mode && (index >= 1 || g_bridge_lazy)
+                     ? static_cast<std::uint8_t>(red + 1)
+                     : red;
                  const bool skipped = in_gap && gap_index >= kUnsubmittedSkipFrom;
 -                if (!d3d12_image_first_red(
 -                        g_application_swapchain_images[acquired_index].Get(), &found)) {
@@ -4178,9 +4202,9 @@ index 2fe6177..264a679 100644
 +                if (!readable) {
                      ++pixel_failures;
                  } else if (skipped) {
-                     pixel_failures += found == red ? 1 : 0;
+                     pixel_failures += found == expected ? 1 : 0;
                  } else if (generated) {
-                     deferred_frames += found != red ? 1 : 0;
+                     deferred_frames += found != expected ? 1 : 0;
 +                    ++generated_frames;
 +                    bool hit = false;
 +                    for (const auto* images :
@@ -4189,7 +4213,7 @@ index 2fe6177..264a679 100644
 +                            std::uint8_t current_red = 0;
 +                            hit = hit ||
 +                                (d3d12_image_first_red(image.Get(), &current_red) &&
-+                                 current_red == red);
++                                 current_red == expected);
 +                        }
 +                    }
 +                    current_hits += hit ? 1 : 0;
@@ -4197,11 +4221,11 @@ index 2fe6177..264a679 100644
 +                    // DCS VR Control (0008): nothing went down naming the
 +                    // swapchain (a frame with no layers): no runtime image
 +                    // is wanted, and a lazy swapchain makes none up to date.
-+                    deferred_frames += found != red ? 1 : 0;
++                    deferred_frames += found != expected ? 1 : 0;
                  } else {
-                     pixel_failures += found != red ? 1 : 0;
+                     pixel_failures += found != expected ? 1 : 0;
                      ++passthrough_frames;
-@@ -3779,6 +3956,8 @@ int main(int argc, char** argv) {
+@@ -3909,6 +4095,8 @@ int main(int argc, char** argv) {
          const bool deferral_valid = !g_d3d11_bridge_mode ||
              (named_stale == 0 && named_checks >= 1 &&
               deferred_frames >= expected_deferred &&
@@ -4210,7 +4234,7 @@ index 2fe6177..264a679 100644
               (!g_bridge_fallback_mode ||
                (passthrough_frames >= 4 && named_checks >= 4)));
          const bool valid = frame_sequence_succeeded && teardown_succeeded &&
-@@ -3809,6 +3988,8 @@ int main(int argc, char** argv) {
+@@ -3940,6 +4128,8 @@ int main(int argc, char** argv) {
                        << " resumed-synthetic=" << resumed_synthetics
                        << " deferred=" << deferred_frames
                        << " passthrough=" << passthrough_frames
@@ -4219,7 +4243,7 @@ index 2fe6177..264a679 100644
                        << " named-checks=" << named_checks
                        << " named-stale=" << named_stale
                        << " private-depth=" << private_depth
-@@ -4302,6 +4483,16 @@ int main(int argc, char** argv) {
+@@ -4433,6 +4623,16 @@ int main(int argc, char** argv) {
                  empty_mid <= 1 && repeats_steady == 0 && real_steady >= 200 &&
                  synthetic_steady + 2 >= 2 * real_steady &&
                  g_waited_display_times.empty() && !g_begun_display_time;
@@ -4236,7 +4260,7 @@ index 2fe6177..264a679 100644
              if (!valid) {
                  std::cerr << "DCS 3X deep validation failed: sequence="
                            << sequence_succeeded << " teardown=" << teardown_succeeded
-@@ -4317,7 +4508,8 @@ int main(int argc, char** argv) {
+@@ -4448,7 +4648,8 @@ int main(int argc, char** argv) {
                            << " jitter-us=" << g_triple_deep_jitter_us << '\n';
                  return EXIT_FAILURE;
              }
@@ -4247,7 +4271,6 @@ index 2fe6177..264a679 100644
                        << " synthetics and no slot re-presented (jitter "
                        << g_triple_deep_jitter_us << " us, " << repeats_total
 diff --git a/tests/layer_lazy_history.cmake b/tests/layer_lazy_history.cmake
-index 6d3e659..0ccb27e 100644
 --- a/tests/layer_lazy_history.cmake
 +++ b/tests/layer_lazy_history.cmake
 @@ -58,9 +58,26 @@ if(NOT own_binding_queue EQUAL 1)
@@ -4335,7 +4358,6 @@ index 6d3e659..0ccb27e 100644
          # Deferred once generation ran, copying again for the fall-back, and
          # deferred again once generation came back.
 diff --git a/tests/layer_triple_deep.cmake b/tests/layer_triple_deep.cmake
-index 9339dcb..f742baa 100644
 --- a/tests/layer_triple_deep.cmake
 +++ b/tests/layer_triple_deep.cmake
 @@ -42,6 +42,8 @@ file(RENAME "${WORK_DIR}/${triple_deep_ini_name}" "${WORK_DIR}/ofxr_bridge.ini")
@@ -4392,7 +4414,6 @@ index 9339dcb..f742baa 100644
  endif()
 diff --git a/tests/ofxr_bridge_d3d11_bridge_eager.ini b/tests/ofxr_bridge_d3d11_bridge_eager.ini
 new file mode 100644
-index 0000000..11a66d5
 --- /dev/null
 +++ b/tests/ofxr_bridge_d3d11_bridge_eager.ini
 @@ -0,0 +1,18 @@
@@ -4415,7 +4436,6 @@ index 0000000..11a66d5
 +[overlay]
 +position=upper_right
 diff --git a/tests/ofxr_bridge_d3d11_bridge_logging.ini b/tests/ofxr_bridge_d3d11_bridge_logging.ini
-index 9c58cca..3444ac5 100644
 --- a/tests/ofxr_bridge_d3d11_bridge_logging.ini
 +++ b/tests/ofxr_bridge_d3d11_bridge_logging.ini
 @@ -9,6 +9,7 @@ nvidia_bidirectional=0
@@ -4428,7 +4448,6 @@ index 9c58cca..3444ac5 100644
  logging_enabled=1
 diff --git a/tests/ofxr_bridge_d3d11_bridge_logging_eager.ini b/tests/ofxr_bridge_d3d11_bridge_logging_eager.ini
 new file mode 100644
-index 0000000..aecdd33
 --- /dev/null
 +++ b/tests/ofxr_bridge_d3d11_bridge_logging_eager.ini
 @@ -0,0 +1,18 @@

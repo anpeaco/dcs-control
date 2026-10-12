@@ -1,5 +1,4 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3c6a6a4..1c58ebb 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -43,6 +43,7 @@ set(XRFG_NVIDIA_OPTICAL_FLOW_SDK_ROOT
@@ -42,7 +41,6 @@ index 3c6a6a4..1c58ebb 100644
      add_library(XR_APILAYER_XRFrameBridge_diagnostic SHARED
 diff --git a/include/xrfg/diagnostic_overlay_model.hpp b/include/xrfg/diagnostic_overlay_model.hpp
 new file mode 100644
-index 0000000..f3c146a
 --- /dev/null
 +++ b/include/xrfg/diagnostic_overlay_model.hpp
 @@ -0,0 +1,139 @@
@@ -186,7 +184,6 @@ index 0000000..f3c146a
 +
 +} // namespace xrfg
 diff --git a/include/xrfg/openxr_fps_overlay.hpp b/include/xrfg/openxr_fps_overlay.hpp
-index bb78e72..2fb6a1f 100644
 --- a/include/xrfg/openxr_fps_overlay.hpp
 +++ b/include/xrfg/openxr_fps_overlay.hpp
 @@ -1,6 +1,7 @@
@@ -211,7 +208,6 @@ index bb78e72..2fb6a1f 100644
      void application_frame(const XrFrameEndInfo* info) noexcept;
 diff --git a/src/core/diagnostic_overlay_model.cpp b/src/core/diagnostic_overlay_model.cpp
 new file mode 100644
-index 0000000..31caa8f
 --- /dev/null
 +++ b/src/core/diagnostic_overlay_model.cpp
 @@ -0,0 +1,271 @@
@@ -487,10 +483,9 @@ index 0000000..31caa8f
 +
 +} // namespace xrfg
 diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
-index 2967686..5c4f8b0 100644
 --- a/src/layer/openxr_fps_overlay.cpp
 +++ b/src/layer/openxr_fps_overlay.cpp
-@@ -26,6 +26,18 @@ template<class T> bool load(PFN_xrGetInstanceProcAddr get, XrInstance instance,
+@@ -27,6 +27,18 @@ template<class T> bool load(PFN_xrGetInstanceProcAddr get, XrInstance instance,
      output = reinterpret_cast<T>(function);
      return true;
  }
@@ -509,7 +504,7 @@ index 2967686..5c4f8b0 100644
  }
  
  struct OpenXrFpsOverlay::Impl {
-@@ -45,23 +57,23 @@ struct OpenXrFpsOverlay::Impl {
+@@ -46,11 +58,13 @@ struct OpenXrFpsOverlay::Impl {
      PFN_xrReleaseSwapchainImage release{};
      PFN_xrGetSystemProperties system_properties{};
      std::filesystem::path ini;
@@ -522,9 +517,10 @@ index 2967686..5c4f8b0 100644
      std::int64_t next_refresh{};
 -    bool attempted{}, initialized{}, image_valid{}, acquired{}, waited{}, disabled{};
 +    bool attempted{}, initialized{}, disabled{};
+     bool paused{};
+     std::atomic<std::int64_t> display_period_ns{0};
      // The number the overlay draws is what the headset received where that
-     // can be known, and what was submitted everywhere else. Only SteamVR
-     // reports the former. Borrowed: the session owns it, because the presenter
+@@ -59,12 +73,10 @@ struct OpenXrFpsOverlay::Impl {
      // reads the vsync anchor from the same connection.
      SteamVrDelivery* delivery{};
      XrSpace space{};
@@ -538,7 +534,7 @@ index 2967686..5c4f8b0 100644
      ComPtr<ID3D12Device> device12;
      ComPtr<ID3D12CommandQueue> queue12;
      ComPtr<ID3D12Fence> fence12;
-@@ -79,7 +91,25 @@ struct OpenXrFpsOverlay::Impl {
+@@ -82,7 +94,25 @@ struct OpenXrFpsOverlay::Impl {
          D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
          std::uint64_t fence_value{};
      };
@@ -565,7 +561,7 @@ index 2967686..5c4f8b0 100644
  
      ~Impl() {
          // Only teardown waits for this overlay's last upload. No global queue
-@@ -93,9 +123,73 @@ struct OpenXrFpsOverlay::Impl {
+@@ -96,9 +126,73 @@ struct OpenXrFpsOverlay::Impl {
              else result = S_FALSE;
              if (result == S_OK) WaitForSingleObject(event, INFINITE);
          }
@@ -640,7 +636,7 @@ index 2967686..5c4f8b0 100644
      }
  
      bool initialize(std::uint32_t eye_width) {
-@@ -115,6 +209,8 @@ struct OpenXrFpsOverlay::Impl {
+@@ -118,6 +212,8 @@ struct OpenXrFpsOverlay::Impl {
          XrSystemProperties properties{XR_TYPE_SYSTEM_PROPERTIES};
          if (XR_FAILED(system_properties(instance, system, &properties))) return false;
          max_layers = std::min(properties.graphicsProperties.maxLayerCount, 128u);
@@ -649,7 +645,7 @@ index 2967686..5c4f8b0 100644
          if (max_layers < 2) return false;
          std::uint32_t count{};
          if (XR_FAILED(enumerate_formats(session, 0, &count, nullptr)) || !count || count > 1024) return false;
-@@ -125,34 +221,15 @@ struct OpenXrFpsOverlay::Impl {
+@@ -128,34 +224,15 @@ struct OpenXrFpsOverlay::Impl {
              if (std::find(formats.begin(), formats.end(), candidate) != formats.end()) { format = candidate; break; }
          }
          if (format == DXGI_FORMAT_UNKNOWN) return false;
@@ -686,7 +682,7 @@ index 2967686..5c4f8b0 100644
              ComPtr<ID3D11DeviceContext> immediate;
              device11->GetImmediateContext(&immediate);
              if (!immediate || FAILED(immediate.As(&context11))) return false;
-@@ -160,67 +237,39 @@ struct OpenXrFpsOverlay::Impl {
+@@ -163,67 +240,39 @@ struct OpenXrFpsOverlay::Impl {
              ComPtr<ID3D11Device5> device5;
              if (FAILED(device11.As(&device5)) || FAILED(device5->CreateFence(
                  0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence11)))) return false;
@@ -773,7 +769,7 @@ index 2967686..5c4f8b0 100644
          HRESULT result = S_OK;
          const auto value = next_fence++;
          if (device11) {
-@@ -233,11 +282,11 @@ struct OpenXrFpsOverlay::Impl {
+@@ -236,11 +285,11 @@ struct OpenXrFpsOverlay::Impl {
              if (multithread11) multithread11->Leave();
          } else {
              if (FAILED(image.allocator->Reset()) || FAILED(image.list->Reset(image.allocator.Get(), nullptr))) {
@@ -787,7 +783,7 @@ index 2967686..5c4f8b0 100644
              for (std::uint32_t row = 0; row < height; ++row)
                  std::memcpy(static_cast<std::uint8_t*>(mapped) + image.footprint.Offset +
                      static_cast<std::size_t>(row) * image.footprint.Footprint.RowPitch,
-@@ -259,23 +308,52 @@ struct OpenXrFpsOverlay::Impl {
+@@ -262,23 +311,52 @@ struct OpenXrFpsOverlay::Impl {
              image.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
              std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
              image.list->ResourceBarrier(1, &barrier);
@@ -845,7 +841,7 @@ index 2967686..5c4f8b0 100644
          if (now < next_refresh) return;
          next_refresh = now + 250'000'000;
          std::array<wchar_t, 32> setting{};
-@@ -284,7 +362,9 @@ struct OpenXrFpsOverlay::Impl {
+@@ -287,7 +365,9 @@ struct OpenXrFpsOverlay::Impl {
          std::string value;
          for (wchar_t c : setting) { if (!c) break; value += c < 128 ? static_cast<char>(c) : '?'; }
          position = parse_overlay_position(value);
@@ -856,7 +852,7 @@ index 2967686..5c4f8b0 100644
          float left = -1, right = 1, down = -1, up = 1;
          std::uint32_t eye_width = 0;
          for (std::uint32_t i = 0; i < info->layerCount; ++i) {
-@@ -314,8 +394,11 @@ struct OpenXrFpsOverlay::Impl {
+@@ -317,8 +397,11 @@ struct OpenXrFpsOverlay::Impl {
              }
          }
          if (!eye_width) return;
@@ -870,17 +866,18 @@ index 2967686..5c4f8b0 100644
          if (!initialize(eye_width)) return;
          // A quad layer in front of the view, which the runtime composites in
          // the order the layer list gives. An application that submits its own
-@@ -324,15 +407,30 @@ struct OpenXrFpsOverlay::Impl {
+@@ -327,8 +410,6 @@ struct OpenXrFpsOverlay::Impl {
          // head turns enough to move it off. Reproduced in Callisto Protocol,
          // and reported as the counter vanishing, so rule it out before
          // suspecting the upload path.
 -        quad.pose.position = {placement.x, placement.y, placement.z};
 -        quad.size = {placement.width, placement.height};
          auto snapshot = counter.snapshot(now);
+         snapshot.paused = paused;
          if (delivery) {
-             if (const auto received = delivery->delivered_fps(now)) {
-                 snapshot.submitted_fps = delivered_new_images(*received, snapshot);
-             }
+@@ -340,7 +421,24 @@ struct OpenXrFpsOverlay::Impl {
+             snapshot.submitted_fps = displayed_rate(
+                 snapshot.submitted_fps, 1.0e9f / static_cast<float>(period));
          }
 -        upload(snapshot);
 +        if (counter_on) {
@@ -904,7 +901,7 @@ index 2967686..5c4f8b0 100644
      }
  };
  
-@@ -346,6 +444,8 @@ OpenXrFpsOverlay::OpenXrFpsOverlay(XrInstance instance, XrSession session, XrSys
+@@ -354,6 +452,8 @@ OpenXrFpsOverlay::OpenXrFpsOverlay(XrInstance instance, XrSession session, XrSys
      impl_->device12 = device12; impl_->queue12 = queue12; impl_->device11 = device11;
      impl_->ini = ini;
      impl_->delivery = delivery;
@@ -913,7 +910,7 @@ index 2967686..5c4f8b0 100644
  }
  OpenXrFpsOverlay::~OpenXrFpsOverlay() = default;
  
-@@ -353,10 +453,20 @@ void OpenXrFpsOverlay::application_frame(const XrFrameEndInfo* info) noexcept {
+@@ -361,10 +461,20 @@ void OpenXrFpsOverlay::application_frame(const XrFrameEndInfo* info) noexcept {
      try { std::scoped_lock lock(impl_->mutex); impl_->application_frame(info); }
      catch (...) { /* Overlay is optional: never fail the game's frame. */ }
  }
@@ -935,7 +932,7 @@ index 2967686..5c4f8b0 100644
      impl_->next_refresh = 0;
      impl_->placement_valid = false;
  }
-@@ -364,8 +474,10 @@ void OpenXrFpsOverlay::reset_metrics() noexcept {
+@@ -383,8 +493,10 @@ void OpenXrFpsOverlay::set_paused(bool paused) noexcept {
  void OpenXrFpsOverlay::suspend() noexcept {
      std::scoped_lock lock(impl_->mutex);
      impl_->disabled = true;
@@ -947,7 +944,7 @@ index 2967686..5c4f8b0 100644
  }
  
  FpsSnapshot OpenXrFpsOverlay::metrics() const noexcept {
-@@ -375,7 +487,8 @@ FpsSnapshot OpenXrFpsOverlay::metrics() const noexcept {
+@@ -394,7 +506,8 @@ FpsSnapshot OpenXrFpsOverlay::metrics() const noexcept {
  
  std::optional<OverlayPlacement> OpenXrFpsOverlay::marker_placement() const noexcept {
      std::scoped_lock lock(impl_->mutex);
@@ -957,7 +954,7 @@ index 2967686..5c4f8b0 100644
          return std::nullopt;
      return impl_->placement;
  }
-@@ -387,18 +500,25 @@ XrResult OpenXrFpsOverlay::end_frame(
+@@ -406,18 +519,25 @@ XrResult OpenXrFpsOverlay::end_frame(
      XrFrameEndInfo composed{};
      const bool nonempty = info && info->type == XR_TYPE_FRAME_END_INFO && info->layers && info->layerCount;
      const XrFrameEndInfo* submitted = info;
@@ -990,13 +987,12 @@ index 2967686..5c4f8b0 100644
  }
  
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index ef4023a..de92cae 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -10751,6 +10751,18 @@ XrResult layer_end_frame_impl(
-     }
+@@ -12257,6 +12257,18 @@ XrResult layer_end_frame_impl(
      if (state->fps_overlay && !manually_disarmed) {
          std::scoped_lock gpu_lock(state->gpu_mutex);
+         state->fps_overlay->set_paused(state->pause_applied);
 +        // DCS VR Control diagnostic panel: what generation is doing now, as
 +        // apply_embedded_control just left it.
 +        xrfg::GenerationStatus generation;
@@ -1014,7 +1010,6 @@ index ef4023a..de92cae 100644
  
 diff --git a/tests/diagnostic_overlay_tests.cpp b/tests/diagnostic_overlay_tests.cpp
 new file mode 100644
-index 0000000..716b3e5
 --- /dev/null
 +++ b/tests/diagnostic_overlay_tests.cpp
 @@ -0,0 +1,187 @@
@@ -1207,7 +1202,6 @@ index 0000000..716b3e5
 +}
 diff --git a/tests/openxr_diagnostic_panel_tests.cpp b/tests/openxr_diagnostic_panel_tests.cpp
 new file mode 100644
-index 0000000..63db225
 --- /dev/null
 +++ b/tests/openxr_diagnostic_panel_tests.cpp
 @@ -0,0 +1,300 @@

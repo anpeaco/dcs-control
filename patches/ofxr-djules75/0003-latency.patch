@@ -1,5 +1,4 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 564f2a4..d695966 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -46,6 +46,7 @@ add_library(xrfg_core STATIC
@@ -26,9 +25,9 @@ index 564f2a4..d695966 100644
  
      add_executable(xrfg_optical_flow_tests tests/optical_flow_tests.cpp)
      target_link_libraries(xrfg_optical_flow_tests PRIVATE xrfg_core)
-@@ -766,6 +776,61 @@ if(WIN32 AND XRFG_BUILD_LAYER)
-                 SKIP_REGULAR_EXPRESSION "SKIP: no Vulkan implementation on this machine")
-         endforeach()
+@@ -871,6 +881,61 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+             TIMEOUT 60
+             SKIP_REGULAR_EXPRESSION "SKIP: no Vulkan implementation on this machine")
  
 +        # DCS VR Control: the display time the application is told under the
 +        # presenter is its real frame's presentation time, once measured, in
@@ -89,13 +88,12 @@ index 564f2a4..d695966 100644
          # leaves off: the application binds a real D3D11 device and the fake
          # runtime takes the D3D12 session the layer hands it.
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
-index 06de6d4..9e9a09a 100644
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -172,6 +172,25 @@ enum class BridgeFlightOperation : std::uint32_t {
-     // A D3D11 session bridged to a D3D12 runtime session: result is a stage
-     // or a failure code (see the layer's D3D11 bridge).
-     d3d11_bridge,
+@@ -231,6 +231,25 @@ enum class BridgeFlightOperation : std::uint32_t {
+     // swapchain, b microseconds waited, c the limit in microseconds << 32 |
+     // the image index. Nothing is written for a capture whose slot was free.
+     history_capture_wait,
 +    // DCS VR Control. Adaptive 2X/3X: the frame multiplier changed or the
 +    // adaptive mode was turned on or off. result is why: 1 the application
 +    // had headroom for 2X, 2 its p90 work was over two display periods in
@@ -119,7 +117,6 @@ index 06de6d4..9e9a09a 100644
  
  struct BridgeFlightToken {
 diff --git a/include/xrfg/diagnostic_overlay_model.hpp b/include/xrfg/diagnostic_overlay_model.hpp
-index f3c146a..46be3e2 100644
 --- a/include/xrfg/diagnostic_overlay_model.hpp
 +++ b/include/xrfg/diagnostic_overlay_model.hpp
 @@ -101,6 +101,7 @@ struct GenerationStatus {
@@ -131,12 +128,11 @@ index f3c146a..46be3e2 100644
  
  enum class DiagnosticColor : std::uint8_t { white, green, amber, grey, red };
 diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
-index e436bb1..26e5333 100644
 --- a/include/xrfg/implicit_layer.hpp
 +++ b/include/xrfg/implicit_layer.hpp
-@@ -94,6 +94,22 @@ struct ConfiguredNvidiaOptions {
- [[nodiscard]] bool read_triple_frame_gen(
-     const std::filesystem::path& module_directory) noexcept;
+@@ -152,6 +152,22 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
+ // This process's executable file name, without its directory.
+ [[nodiscard]] std::wstring current_executable_name() noexcept;
  
 +// DCS VR Control. `[ofxr] adaptive_frame_gen`: the session moves between 2X
 +// and 3X on its own, from the application's measured work per frame; the
@@ -159,7 +155,6 @@ index e436bb1..26e5333 100644
  // runtime's swapchain limit pushed back to a single synthetic. The tray asks
 diff --git a/include/xrfg/latency_control.hpp b/include/xrfg/latency_control.hpp
 new file mode 100644
-index 0000000..38cdf48
 --- /dev/null
 +++ b/include/xrfg/latency_control.hpp
 @@ -0,0 +1,236 @@
@@ -400,10 +395,9 @@ index 0000000..38cdf48
 +
 +} // namespace xrfg::latency
 diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
-index 0678863..e1a142b 100644
 --- a/src/common/implicit_layer.cpp
 +++ b/src/common/implicit_layer.cpp
-@@ -243,6 +243,34 @@ bool read_triple_frame_gen(
+@@ -401,6 +401,34 @@ std::wstring current_executable_name() noexcept {
      }
  }
  
@@ -439,7 +433,6 @@ index 0678863..e1a142b 100644
  constexpr wchar_t kFixedFrameMultiplierEvent[] =
      L"Local\\OFXRBridgeFixedFrameMultiplier";
 diff --git a/src/core/diagnostic_overlay_model.cpp b/src/core/diagnostic_overlay_model.cpp
-index 31caa8f..525ec2a 100644
 --- a/src/core/diagnostic_overlay_model.cpp
 +++ b/src/core/diagnostic_overlay_model.cpp
 @@ -106,6 +106,7 @@ std::string format_generation_line(const DiagnosticInputs& in, DiagnosticColor&
@@ -452,7 +445,6 @@ index 31caa8f..525ec2a 100644
          color = DiagnosticColor::amber;
 diff --git a/src/core/latency_control.cpp b/src/core/latency_control.cpp
 new file mode 100644
-index 0000000..94ad824
 --- /dev/null
 +++ b/src/core/latency_control.cpp
 @@ -0,0 +1,285 @@
@@ -742,10 +734,9 @@ index 0000000..94ad824
 +
 +} // namespace xrfg::latency
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
-index 4802ea3..e774d08 100644
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -94,6 +94,12 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -106,6 +106,12 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "vulkan_interop";
      case BridgeFlightOperation::d3d11_bridge:
          return "d3d11_bridge";
@@ -759,7 +750,6 @@ index 4802ea3..e774d08 100644
          return "synthesis_frame_start_wait";
      case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index c3a7d43..369c51c 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
 @@ -7,6 +7,7 @@
@@ -770,7 +760,7 @@ index c3a7d43..369c51c 100644
  #include "xrfg/embedded_control.hpp"
  #include "xrfg/provider_api.hpp"
  #include <atomic>
-@@ -726,11 +727,155 @@ struct JoinProbe {
+@@ -759,11 +760,155 @@ struct JoinProbe {
      }
  };
  
@@ -926,7 +916,7 @@ index c3a7d43..369c51c 100644
          xrfg::embedded::detach(control_id);
          if (presenter_pace_timer != nullptr) {
              CloseHandle(presenter_pace_timer);
-@@ -1188,32 +1333,57 @@ struct SessionState {
+@@ -1275,32 +1420,57 @@ struct SessionState {
      // real frame's hand-over, which was the first version of this test -
      // left most of that period unused: The Callisto Protocol settled at 4 ms
      // of delay with the application still finishing 8 ms before it could be
@@ -1004,7 +994,7 @@ index c3a7d43..369c51c 100644
      // The application's thread only.
      HANDLE application_release_timer{};
      // A condition variable waits on the system tick, which is 15.6 ms by
-@@ -1259,6 +1429,16 @@ struct SessionState {
+@@ -1346,6 +1516,16 @@ struct SessionState {
      // never two in a row.
      std::uint64_t presenter_frame_serial{};
      std::uint64_t application_served_serial{};
@@ -1021,7 +1011,7 @@ index c3a7d43..369c51c 100644
      bool presenter_stop_requested{};
      bool presenter_active{};
      XrSession handle{XR_NULL_HANDLE};
-@@ -3255,6 +3435,15 @@ create_vulkan_frame_generation_swapchains(
+@@ -3775,6 +3955,15 @@ create_vulkan_frame_generation_swapchains(
              session->fixed_frame_multiplier.hold();
          }
          session->triple_switchable = false;
@@ -1037,10 +1027,10 @@ index c3a7d43..369c51c 100644
          for (const ProjectionResourceMapping& mapping : mappings) {
              const auto swapchain = find_swapchain(mapping.application_swapchain);
              if (!swapchain) {
-@@ -4195,6 +4384,13 @@ XrResult layer_create_session_impl(
-         xrfg::implicit_layer::read_deep_pipeline(current_layer_directory());
-     const bool triple_requested =
-         xrfg::implicit_layer::read_triple_frame_gen(current_layer_directory());
+@@ -4809,6 +4998,13 @@ XrResult layer_create_session_impl(
+         xrfg::implicit_layer::read_single_swapchain_rings(current_layer_directory());
+     state->capture_at_end_frame =
+         xrfg::implicit_layer::read_capture_at_end_frame(current_layer_directory());
 +    // DCS VR Control: adaptive 2X/3X and the display time correction.
 +    const bool adaptive_requested =
 +        xrfg::implicit_layer::read_adaptive_frame_gen(current_layer_directory());
@@ -1050,8 +1040,8 @@ index c3a7d43..369c51c 100644
 +    state->adaptive_ini_triple = triple_requested;
      state->vulkan_support =
          xrfg::implicit_layer::read_vulkan_support(current_layer_directory());
-     state->menu_enabled = initial_control.desired.enabled;
-@@ -4361,13 +4557,33 @@ XrResult layer_create_session_impl(
+     state->pause_applied = state->manual_control.pause_requested();
+@@ -5042,13 +5238,33 @@ XrResult layer_create_session_impl(
          state->frames_per_application_frame = 3;
          state->deep_pipeline = false;
      }
@@ -1086,7 +1076,7 @@ index c3a7d43..369c51c 100644
      // 700: the session's shape. a frames per application frame, b the deeper
      // pipeline, c whether 3X was asked for - or 2 when the record marks a
      // live change rather than the session's creation.
-@@ -4770,9 +4986,38 @@ XrResult layer_wait_frame_impl(
+@@ -5456,9 +5672,38 @@ XrResult layer_wait_frame_impl(
          // The application's timeline is anchored to the runtime's own
          // prediction, one virtual period ahead of the frame the presenter is
          // about to submit.
@@ -1127,7 +1117,7 @@ index c3a7d43..369c51c 100644
          // A second wait inside one presenter frame has to come back later than
          // the first, so the guard below steps off the last time served. That
          // step invents time the runtime never advanced, and the ceiling is
-@@ -6389,7 +6634,8 @@ void fail_pending_presenter_submissions_locked(
+@@ -7643,7 +7888,8 @@ constexpr std::uint32_t kScanoutJumpCooldownFrames = 8;
  }
  
  // How long before its hand-over a frame's first synthetic has to be written
@@ -1137,7 +1127,7 @@ index c3a7d43..369c51c 100644
  constexpr auto kTripleReadinessMargin = std::chrono::nanoseconds(4'000'000);
  
  struct TripleReleaseReport {
-@@ -6411,68 +6657,30 @@ struct TripleReleaseReport {
+@@ -7665,68 +7911,30 @@ struct TripleReleaseReport {
  }
  
  // One observation for the 3X release delay, and the step when a window of
@@ -1220,7 +1210,7 @@ index c3a7d43..369c51c 100644
  void log_triple_release(const TripleReleaseReport& report) noexcept {
      if (report.delay_us < 0) {
          return;
-@@ -7141,11 +7349,22 @@ void continuous_presenter_main(
+@@ -8408,8 +8616,19 @@ void continuous_presenter_main(
              std::int64_t held_reason = 0;
              // 3X release delay, recorded after the lock.
              TripleReleaseReport release_report{};
@@ -1231,9 +1221,6 @@ index c3a7d43..369c51c 100644
 +            std::size_t display_time_mode = 0;
              {
                  std::scoped_lock lock(state->presenter_mutex);
-                 // The boundary the application's release is steered against;
-                 // see application_completion_phase.
-                 state->presenter_pop_at = pop_now;
 +                // Off SteamVR, 3X: whether this slot is a first synthetic's
 +                // and is judged for the release delay; see triple_release.
 +                const bool judge_leader = state->triple_leader_due &&
@@ -1243,7 +1230,7 @@ index c3a7d43..369c51c 100644
                  if (!state->presenter_stop_requested &&
                      !state->presenter_submissions.empty()) {
                      const auto& front = state->presenter_submissions.front();
-@@ -7186,6 +7405,9 @@ void continuous_presenter_main(
+@@ -8450,6 +8669,9 @@ void continuous_presenter_main(
                          held_sequence = front->sequence;
                          held_reason = too_young ? 400 : 401;
                          repeated_frame = state->presenter_last_frame;
@@ -1253,7 +1240,7 @@ index c3a7d43..369c51c 100644
                      } else {
                          if (too_young || not_written) {
                              // Recorded below as 402: would have held.
-@@ -7196,34 +7418,97 @@ void continuous_presenter_main(
+@@ -8460,34 +8682,97 @@ void continuous_presenter_main(
                          }
                          request = front;
                          state->presenter_submissions.pop_front();
@@ -1361,7 +1348,7 @@ index c3a7d43..369c51c 100644
              // Recorded outside presenter_mutex, which the application waits
              // on. result=400: a synthetic held for the pipeline's depth;
              // 401: held because its output had not been written yet; 402: one
-@@ -8278,6 +8563,8 @@ void continuous_presenter_main(
+@@ -9599,6 +9884,8 @@ void continuous_presenter_main(
          // wait of this one straight away or never.
          state->presenter_frame_serial = 0;
          state->application_served_serial = 0;
@@ -1370,41 +1357,42 @@ index c3a7d43..369c51c 100644
          // A schedule left over from a previous presenter would stall the first
          // submission of this one.
          // A display time from a previous presenter says nothing about this
-@@ -8432,6 +8719,11 @@ void wait_for_presenter_pair(
+@@ -9788,8 +10075,13 @@ void wait_for_presenter_pair(
              ? reached - served - kPresenterFramesPerPair
              : 0;
          state->application_served_serial = reached;
+-        // 3X only: see triple_release_delay. A pair is released as soon as
+-        // the presenter has run it. A delay that steered the application's
 +        if (state->presenter_frame_state_valid) {
 +            state->application_release_display_time =
 +                state->presenter_frame_state.predictedDisplayTime;
 +            state->application_release_serial = reached;
 +        }
-         // Keep the application's completion off the pop boundary; see
-         // application_completion_phase. The step is decided here, under the
-         // lock, and slept after it.
-@@ -8440,8 +8732,9 @@ void wait_for_presenter_pair(
-         std::int64_t steer_step_us = 0;
-         if (state->frames_per_application_frame > 2) {
-             // 3X is steered on synthesis readiness instead, on every
--            // runtime: see triple_release_delay.
--            release_offset = state->triple_release_delay;
-+            // runtime: see triple_release.
-+            release_offset =
-+                std::chrono::nanoseconds(state->triple_release.delay);
-         } else if (!state->dispatch->steamvr_runtime &&
-             state->presenter_display_period > 0) {
-             const auto period = std::chrono::nanoseconds(
-@@ -8519,6 +8812,9 @@ void wait_for_presenter_pair(
++        // 3X only: see triple_release. A pair is released as soon as the
++        // presenter has run it. A delay that steered the application's
+         // completion away from the presenter's cycle boundary used to sit
+         // here on every runtime but SteamVR; it only ever stepped later, and
+         // whatever it reached came out of the application's two periods. At
+@@ -9798,7 +10090,7 @@ void wait_for_presenter_pair(
+         // 5.9 ms on the same frame.
+         const std::chrono::nanoseconds release_offset =
+             presenter_frames > 2
+-                ? state->triple_release_delay
++                ? std::chrono::nanoseconds(state->triple_release.delay)
+                 : std::chrono::nanoseconds::zero();
+         // Never record under presenter_mutex: the presenter thread takes it
+         // every frame, and this path has deadlocked the layer twice.
+@@ -9829,6 +10121,9 @@ void wait_for_presenter_pair(
                  }
              }
          }
 +        // DCS VR Control: the application starts its next frame now; its work
 +        // for adaptive 2X/3X is counted from here.
 +        state->application_released_at = std::chrono::steady_clock::now();
-         // result=800: the release offset stepped. a the median completion
-         // phase that triggered it, b the offset now in force, c the step,
-         // all in microseconds.
-@@ -9748,10 +10044,13 @@ struct PreparedProjectionFrame {
+         xrfg::bridge_flight_logger().event(
+             xrfg::BridgeFlightOperation::presenter_pair_release,
+             static_cast<std::int64_t>(surplus),
+@@ -11069,10 +11364,13 @@ struct PreparedProjectionFrame {
              // the runtime reads the D3D11 images the copy writes. Both
              // accessors hand back a fence the presenter can poll without
              // either object's lock.
@@ -1420,7 +1408,7 @@ index c3a7d43..369c51c 100644
                  if (generation->interop) {
                      std::uint64_t published = 0;
                      if (SUCCEEDED(generation->interop->publication_fence(
-@@ -10745,6 +11044,17 @@ void note_bridged_submissions(
+@@ -12195,6 +12493,17 @@ void note_bridged_submissions(
  // follows primes rather than pairing across the change. The application
  // sees its period step between two and three display periods at its next
  // wait, and one frame without synthetics.
@@ -1438,7 +1426,7 @@ index c3a7d43..369c51c 100644
  void apply_live_frame_multiplier(
      const std::shared_ptr<SessionState>& state,
      bool use_continuous_presenter) noexcept {
-@@ -10752,25 +11062,126 @@ void apply_live_frame_multiplier(
+@@ -12202,25 +12511,126 @@ void apply_live_frame_multiplier(
          if (!state->triple_switchable) {
              return;
          }
@@ -1574,7 +1562,7 @@ index c3a7d43..369c51c 100644
          {
              std::scoped_lock content_lock(state->presenter_content_mutex);
              std::scoped_lock lock(state->presenter_mutex);
-@@ -10779,23 +11190,61 @@ void apply_live_frame_multiplier(
+@@ -12229,23 +12639,61 @@ void apply_live_frame_multiplier(
                  target == 2U && state->deep_pipeline_configured;
              deep = state->deep_pipeline;
              // The release delay belongs to the shape it was found in.
@@ -1642,7 +1630,7 @@ index c3a7d43..369c51c 100644
      } catch (...) {
      }
  }
-@@ -10920,6 +11369,7 @@ XrResult layer_end_frame_impl(
+@@ -12426,6 +12874,7 @@ XrResult layer_end_frame_impl(
          generation.budget_exhausted =
              state->generation_budget_exhausted.load(std::memory_order_acquire);
          generation.multiplier = state->frames_per_application_frame.load();
@@ -1650,7 +1638,7 @@ index c3a7d43..369c51c 100644
          state->fps_overlay->set_generation_status(generation);
          state->fps_overlay->application_frame(end_info);
      }
-@@ -11477,11 +11927,29 @@ XrResult layer_end_frame_impl(
+@@ -13034,11 +13483,29 @@ XrResult layer_end_frame_impl(
      XrResult result = XR_SUCCESS;
      if (use_continuous_presenter) {
          if (pair_ready) {
@@ -1681,7 +1669,6 @@ index c3a7d43..369c51c 100644
                  // Refused before anything was queued, so nothing else will
                  // ever release these.
 diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
-index 9904c37..6605794 100644
 --- a/tests/bridge_flight_logger_tests.cpp
 +++ b/tests/bridge_flight_logger_tests.cpp
 @@ -151,6 +151,24 @@ int main(int argc, char** argv) {
@@ -1725,7 +1712,6 @@ index 9904c37..6605794 100644
          std::cout << "Bridge flight logger tests passed.\n";
          return 0;
 diff --git a/tests/diagnostic_overlay_tests.cpp b/tests/diagnostic_overlay_tests.cpp
-index 716b3e5..353210e 100644
 --- a/tests/diagnostic_overlay_tests.cpp
 +++ b/tests/diagnostic_overlay_tests.cpp
 @@ -112,6 +112,13 @@ int main() {
@@ -1744,7 +1730,6 @@ index 716b3e5..353210e 100644
          in.generation.nvidia_unavailable = true;
 diff --git a/tests/latency_control_tests.cpp b/tests/latency_control_tests.cpp
 new file mode 100644
-index 0000000..1bddd30
 --- /dev/null
 +++ b/tests/latency_control_tests.cpp
 @@ -0,0 +1,421 @@
@@ -2171,7 +2156,6 @@ index 0000000..1bddd30
 +}
 diff --git a/tests/layer_adaptive_frame_gen.cmake b/tests/layer_adaptive_frame_gen.cmake
 new file mode 100644
-index 0000000..61189fb
 --- /dev/null
 +++ b/tests/layer_adaptive_frame_gen.cmake
 @@ -0,0 +1,65 @@
@@ -2241,10 +2225,9 @@ index 0000000..61189fb
 +    message(FATAL_ERROR "No 2X -> 3X adaptive switch for a slow or late application")
 +endif()
 diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
-index d651980..e4e117d 100644
 --- a/tests/layer_call_chain.cpp
 +++ b/tests/layer_call_chain.cpp
-@@ -158,6 +158,21 @@ std::atomic<std::uint32_t> g_budget_refusals{0};
+@@ -184,6 +184,21 @@ std::atomic<std::uint32_t> g_budget_refusals{0};
  // decides whether the frame pairs, and it has to accept the older pending
  // frame. The fake runtime behaves exactly as in steamvr-presenter.
  bool g_dcs_mode = false;
@@ -2266,7 +2249,7 @@ index d651980..e4e117d 100644
  bool g_flight_simulator_mode = false;
  bool g_destroy_pending_swapchain = false;
  bool g_destroy_pending_space = false;
-@@ -347,6 +362,12 @@ std::array<ComPtr<ID3D12Resource>, 3> g_synthetic_swapchain_right_b_images;
+@@ -390,6 +405,12 @@ std::array<ComPtr<ID3D12Resource>, 3> g_synthetic_swapchain_right_b_images;
  }
  
  [[nodiscard]] XrTime fake_camera_time(XrTime display_time) noexcept {
@@ -2279,7 +2262,7 @@ index d651980..e4e117d 100644
      if (g_steamvr_presenter_mode || g_flight_simulator_mode) {
          return (display_time / kFakeDisplayPeriod) * 100;
      }
-@@ -487,6 +508,65 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_end_session(XrSession) {
+@@ -530,6 +551,65 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_end_session(XrSession) {
      return XR_SUCCESS;
  }
  
@@ -2345,7 +2328,7 @@ index d651980..e4e117d 100644
  XRAPI_ATTR XrResult XRAPI_CALL fake_wait_frame(
      XrSession,
      const XrFrameWaitInfo*,
-@@ -520,6 +600,10 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_wait_frame(
+@@ -563,6 +643,10 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_wait_frame(
              std::this_thread::sleep_for(std::chrono::milliseconds(1));
          }
      }
@@ -2356,7 +2339,7 @@ index d651980..e4e117d 100644
      if (g_flight_simulator_mode &&
          GetCurrentThreadId() != g_test_application_thread_id) {
          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-@@ -549,7 +633,7 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_wait_frame(
+@@ -592,7 +676,7 @@ XRAPI_ATTR XrResult XRAPI_CALL fake_wait_frame(
              : XR_TRUE;
      g_next_display_time += g_flight_simulator_mode
          ? kFakeDisplayPeriod * 3
@@ -2365,20 +2348,21 @@ index d651980..e4e117d 100644
      {
          std::scoped_lock lock(g_frame_loop_mutex);
          if (!g_waited_display_times.empty()) {
-@@ -2084,8 +2168,8 @@ int main(int argc, char** argv) {
+@@ -2174,8 +2258,9 @@ int main(int argc, char** argv) {
              "d3d11-double-wide|steamvr-inline|steamvr-presenter|"
              "flight-simulator|uevr-pipelined-time|inverted-fov|"
              "d3d11-inverted-fov|d3d11-single-threaded|vulkan|swapchain-budget|"
 -            "dcs|dcs-d3d11|d3d11-bridge|d3d11-bridge-acquire-ahead|"
--            "d3d11-bridge-unsubmitted]\n";
+-            "d3d11-bridge-late-paint|d3d11-bridge-unsubmitted|steamvr-own-time]\n";
 +            "dcs|dcs-d3d11|dcs-latency|dcs-adaptive|d3d11-bridge|"
-+            "d3d11-bridge-acquire-ahead|d3d11-bridge-unsubmitted]\n";
++            "d3d11-bridge-acquire-ahead|d3d11-bridge-late-paint|"
++            "d3d11-bridge-unsubmitted|steamvr-own-time]\n";
          return EXIT_FAILURE;
      }
      g_dcs_d3d11_mode = argc == 4 && std::strcmp(argv[3], "dcs-d3d11") == 0;
-@@ -2095,7 +2179,11 @@ int main(int argc, char** argv) {
+@@ -2187,7 +2272,11 @@ int main(int argc, char** argv) {
          argc == 4 && std::strcmp(argv[3], "d3d11-bridge-unsubmitted") == 0;
-     g_d3d11_bridge_mode = g_acquire_ahead_mode || g_unsubmitted_mode ||
+     g_d3d11_bridge_mode = g_acquire_ahead_mode || g_late_paint_mode || g_unsubmitted_mode ||
          (argc == 4 && std::strcmp(argv[3], "d3d11-bridge") == 0);
 -    g_dcs_mode = g_dcs_d3d11_mode ||
 +    g_adaptive_latency_mode =
@@ -2389,20 +2373,20 @@ index d651980..e4e117d 100644
          (argc == 4 && std::strcmp(argv[3], "dcs") == 0);
      g_cropped_subimage_mode =
          argc == 4 && std::strcmp(argv[3], "cropped-split-eye") == 0;
-@@ -2103,7 +2191,11 @@ int main(int argc, char** argv) {
-         argc == 4 && std::strcmp(argv[3], "d3d11-double-wide") == 0;
-     g_destroy_pending_space =
-         argc == 4 && std::strcmp(argv[3], "steamvr-destroy-space") == 0;
+@@ -2199,7 +2288,11 @@ int main(int argc, char** argv) {
+         argc == 4 && std::strcmp(argv[3], "steamvr-layer-invalid") == 0;
+     g_own_display_time_mode =
+         argc == 4 && std::strcmp(argv[3], "steamvr-own-time") == 0;
 -    g_steamvr_presenter_mode = g_destroy_pending_space || g_dcs_mode ||
 +    // dcs-latency and dcs-adaptive run on a runtime that is not SteamVR, as
 +    // DCS World on Pimax OpenXR does: the presenter comes by the pipelined
 +    // route and paces on the runtime's own wait.
 +    g_steamvr_presenter_mode = g_destroy_pending_space ||
 +        (g_dcs_mode && !g_display_latency_mode) ||
+         g_refuse_layer_mode || g_own_display_time_mode ||
          (argc == 4 && std::strcmp(argv[3], "steamvr-presenter") == 0);
      g_single_threaded_mode =
-         argc == 4 && std::strcmp(argv[3], "d3d11-single-threaded") == 0;
-@@ -2146,11 +2238,19 @@ int main(int argc, char** argv) {
+@@ -2251,12 +2344,19 @@ int main(int argc, char** argv) {
              g_frames_per_application_frame = 3;
              g_deep_pipeline = true;
          }
@@ -2417,13 +2401,13 @@ index d651980..e4e117d 100644
      if (argc == 4 && !g_split_eye_mode && !g_double_wide_mode &&
          !g_d3d11_interop_mode && !g_steamvr_runtime_mode &&
          !g_flight_simulator_mode && !g_uevr_pipelined_display_time_mode &&
--        !g_inverted_vertical_fov && !g_vulkan_mode && !g_swapchain_budget_mode) {
-+        !g_inverted_vertical_fov && !g_vulkan_mode && !g_swapchain_budget_mode &&
-+        !g_display_latency_mode) {
+         !g_inverted_vertical_fov && !g_vulkan_mode && !g_vulkan_bridge_mode &&
+-        !g_swapchain_budget_mode) {
++        !g_swapchain_budget_mode && !g_display_latency_mode) {
          std::cerr << "unknown test mode\n";
          return EXIT_FAILURE;
      }
-@@ -2159,7 +2259,7 @@ int main(int argc, char** argv) {
+@@ -2265,7 +2365,7 @@ int main(int argc, char** argv) {
          CreateMutexA(nullptr, FALSE, "Local\\XRFGLayerCallChainFakeRuntimeTest");
      const DWORD mutex_wait = execution_mutex == nullptr
                                   ? WAIT_FAILED
@@ -2432,7 +2416,7 @@ index d651980..e4e117d 100644
      if (execution_mutex == nullptr ||
          (mutex_wait != WAIT_OBJECT_0 && mutex_wait != WAIT_ABANDONED_0)) {
          if (execution_mutex != nullptr) {
-@@ -2913,6 +3013,11 @@ int main(int argc, char** argv) {
+@@ -3030,6 +3130,11 @@ int main(int argc, char** argv) {
              projection_views[index].pose = submitted.pose;
              projection_views[index].fov = submitted.fov;
          }
@@ -2444,7 +2428,7 @@ index d651980..e4e117d 100644
  
          XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
          frame_end_info.displayTime = display_time;
-@@ -3387,9 +3492,16 @@ int main(int argc, char** argv) {
+@@ -3518,9 +3623,16 @@ int main(int argc, char** argv) {
                  while (!wait_started.load(std::memory_order_acquire)) {
                      std::this_thread::yield();
                  }
@@ -2462,7 +2446,7 @@ index d651980..e4e117d 100644
                  ok = ok && XR_SUCCEEDED(next_wait_result) &&
                      capture_fresh_application_image() &&
                      submit_frame(pending.predictedDisplayTime) &&
-@@ -3424,11 +3536,111 @@ int main(int argc, char** argv) {
+@@ -3555,11 +3667,111 @@ int main(int argc, char** argv) {
              std::scoped_lock lock(g_end_records_mutex);
              records_before_overlapping_frames = g_end_records.size();
          }
@@ -2575,7 +2559,7 @@ index d651980..e4e117d 100644
          sequence_succeeded = sequence_succeeded &&
              XR_SUCCEEDED(begin_frame(session, &frame_begin_info)) &&
              capture_fresh_application_image() &&
-@@ -3472,6 +3684,49 @@ int main(int argc, char** argv) {
+@@ -3603,6 +3815,49 @@ int main(int argc, char** argv) {
          const std::uint32_t off_thread =
              g_off_thread_frame_calls.load(std::memory_order_relaxed);
          bool valid = false;
@@ -2627,7 +2611,6 @@ index d651980..e4e117d 100644
              // no frame begun by a presenter, nothing to the runtime off the
 diff --git a/tests/ofxr_bridge_adaptive.ini b/tests/ofxr_bridge_adaptive.ini
 new file mode 100644
-index 0000000..5b7d196
 --- /dev/null
 +++ b/tests/ofxr_bridge_adaptive.ini
 @@ -0,0 +1,17 @@
@@ -2650,7 +2633,6 @@ index 0000000..5b7d196
 +position=upper_right
 diff --git a/tests/ofxr_bridge_adaptive_shallow.ini b/tests/ofxr_bridge_adaptive_shallow.ini
 new file mode 100644
-index 0000000..e4e065a
 --- /dev/null
 +++ b/tests/ofxr_bridge_adaptive_shallow.ini
 @@ -0,0 +1,17 @@

@@ -1,9 +1,9 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -794,6 +794,22 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+@@ -913,6 +913,22 @@ if(WIN32 AND XRFG_BUILD_LAYER)
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/layer_call_chain_depth.cmake")
-         set_tests_properties(xrfg_layer_d3d11_bridge_acquire_ahead PROPERTIES TIMEOUT 60)
+         set_tests_properties(xrfg_layer_d3d11_bridge_late_paint PROPERTIES TIMEOUT 60)
  
 +        # The same bridge with a swapchain the application keeps releasing
 +        # through a stretch of frames that name no layer, as DCS's quad-view
@@ -192,7 +192,7 @@ diff --git a/src/d3d11/d3d11_bridge.cpp b/src/d3d11/d3d11_bridge.cpp
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -5821,12 +5821,32 @@ XrResult layer_release_swapchain_image_impl(
+@@ -6731,6 +6731,13 @@ XrResult release_swapchain_image_locked(
              }
          }
      }
@@ -206,7 +206,10 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
      // Bridged: the application's rendering goes to the runtime's image now,
      // whatever generation does with it afterwards. A failed copy is logged
      // and the release still goes down, so the runtime shows its last content
-     // rather than the session failing.
+@@ -6748,8 +6755,21 @@ XrResult release_swapchain_image_locked(
+                 static_cast<std::uint64_t>(static_cast<std::uint32_t>(copy_result)));
+         }
+     }
 +    //
 +    // A swapchain no frame has named for a while (D3D11BridgeSwapchain::
 +    // release returns S_FALSE: DCS's quad-view swapchains behind Quad Views)
@@ -225,7 +228,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
          if (FAILED(copy_result)) {
              xrfg::bridge_flight_logger().event(
                  xrfg::BridgeFlightOperation::d3d11_bridge,
-@@ -5836,14 +5856,6 @@ XrResult layer_release_swapchain_image_impl(
+@@ -6759,14 +6779,6 @@ XrResult release_swapchain_image_locked(
                  static_cast<std::uint64_t>(static_cast<std::uint32_t>(copy_result)));
          }
      }
@@ -237,10 +240,10 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
 -        history.reset();
 -        interop.reset();
 -    }
-     if (candidate_index && history) {
-         gpu_lock = std::unique_lock<std::mutex>(state->session->gpu_mutex);
-     }
-@@ -10577,6 +10589,149 @@ struct PrivateDepthStrip {
+     // Native D3D12 with capture_at_end_frame: the capture waits for the
+     // application's xrEndFrame (capture_pending_end_frame_images). A release
+     // says the image's rendering has been submitted, and an application whose
+@@ -12027,6 +12039,149 @@ struct PrivateDepthStrip {
      return &storage.info;
  }
  
@@ -371,7 +374,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
 +            } else if (FAILED(result)) {
 +                xrfg::bridge_flight_logger().event(
 +                    xrfg::BridgeFlightOperation::d3d11_bridge,
-+                    4,
++                    6, // DCS Control: 4 is upstream's deferred release
 +                    handle_value(swapchain_state->handle),
 +                    0,
 +                    static_cast<std::uint64_t>(static_cast<std::uint32_t>(result)));
@@ -390,9 +393,9 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
  // Follows the tray's "3X Frame Gen" switch while the session runs. Called at
  // the top of the application's xrEndFrame, under frame_call_mutex, before
  // this frame is prepared.
-@@ -10681,6 +10836,9 @@ XrResult layer_end_frame_impl(
-             }
-         }
+@@ -12185,6 +12340,9 @@ XrResult layer_end_frame_impl(
+         // capture had run would be reading it under that transition.
+         mark_application_release(state.get());
      }
 +    // D3D11 bridge: copies skipped for swapchains no frame named are caught
 +    // up here if this one names them, before the counter below is taken.
@@ -579,10 +582,10 @@ diff --git a/tests/d3d11_bridge_tests.cpp b/tests/d3d11_bridge_tests.cpp
 diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
 --- a/tests/layer_call_chain.cpp
 +++ b/tests/layer_call_chain.cpp
-@@ -98,6 +98,16 @@ bool g_d3d11_bridge_mode = false;
- // ahead of the one it renders, and the first acquire is outstanding across
- // a session restart (Ready or Not's VR mod acquires before xrBeginSession).
- bool g_acquire_ahead_mode = false;
+@@ -117,6 +117,16 @@ bool g_acquire_ahead_mode = false;
+ // drawing: the layer defers a bridged release to xrEndFrame once it knows the
+ // thread that ends frames, so the first frame is still copied at its release.
+ bool g_late_paint_mode = false;
 +// d3d11-bridge-unsubmitted: the application keeps rendering and releasing its
 +// swapchain through a stretch of frames that submit no layers (as DCS's
 +// quad-view swapchains never reach the runtime behind Quad Views), then names
@@ -596,26 +599,27 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
  std::atomic<bool> g_acquire_ahead_active{false};
  std::atomic<std::uint32_t> g_acquire_ahead_calls{0};
  std::atomic<bool> g_bridge_session_bound{false};
-@@ -2074,13 +2084,16 @@ int main(int argc, char** argv) {
-             "d3d11-double-wide|steamvr-inline|steamvr-presenter|"
+@@ -2165,7 +2175,7 @@ int main(int argc, char** argv) {
              "flight-simulator|uevr-pipelined-time|inverted-fov|"
              "d3d11-inverted-fov|d3d11-single-threaded|vulkan|swapchain-budget|"
--            "dcs|dcs-d3d11|d3d11-bridge|d3d11-bridge-acquire-ahead]\n";
-+            "dcs|dcs-d3d11|d3d11-bridge|d3d11-bridge-acquire-ahead|"
-+            "d3d11-bridge-unsubmitted]\n";
+             "dcs|dcs-d3d11|d3d11-bridge|d3d11-bridge-acquire-ahead|"
+-            "d3d11-bridge-late-paint|steamvr-own-time]\n";
++            "d3d11-bridge-late-paint|d3d11-bridge-unsubmitted|steamvr-own-time]\n";
          return EXIT_FAILURE;
      }
      g_dcs_d3d11_mode = argc == 4 && std::strcmp(argv[3], "dcs-d3d11") == 0;
-     g_acquire_ahead_mode =
+@@ -2173,7 +2183,9 @@ int main(int argc, char** argv) {
          argc == 4 && std::strcmp(argv[3], "d3d11-bridge-acquire-ahead") == 0;
--    g_d3d11_bridge_mode = g_acquire_ahead_mode ||
+     g_late_paint_mode =
+         argc == 4 && std::strcmp(argv[3], "d3d11-bridge-late-paint") == 0;
+-    g_d3d11_bridge_mode = g_acquire_ahead_mode || g_late_paint_mode ||
 +    g_unsubmitted_mode =
 +        argc == 4 && std::strcmp(argv[3], "d3d11-bridge-unsubmitted") == 0;
-+    g_d3d11_bridge_mode = g_acquire_ahead_mode || g_unsubmitted_mode ||
++    g_d3d11_bridge_mode = g_acquire_ahead_mode || g_late_paint_mode || g_unsubmitted_mode ||
          (argc == 4 && std::strcmp(argv[3], "d3d11-bridge") == 0);
      g_dcs_mode = g_dcs_d3d11_mode ||
          (argc == 4 && std::strcmp(argv[3], "dcs") == 0);
-@@ -2904,7 +2917,8 @@ int main(int argc, char** argv) {
+@@ -3022,7 +3034,8 @@ int main(int argc, char** argv) {
          XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
          frame_end_info.displayTime = display_time;
          frame_end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -625,7 +629,7 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
          frame_end_info.layers = layers;
          // SteamVR throttles the *inline* second cycle, not the application's
          // own wait. Mark the window so the fake runtime can tell them apart by
-@@ -3197,8 +3211,28 @@ int main(int argc, char** argv) {
+@@ -3321,8 +3334,28 @@ int main(int argc, char** argv) {
                      paint_d3d11_image(
                          d3d11_swapchain_images[acquired_index].texture, red));
          };
@@ -655,7 +659,7 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
              frame_sequence_succeeded = frame_sequence_succeeded &&
                  XR_SUCCEEDED(wait_frame(
                      session, &frame_wait_info, &application_frame)) &&
-@@ -3219,14 +3253,20 @@ int main(int argc, char** argv) {
+@@ -3347,17 +3380,23 @@ int main(int argc, char** argv) {
                  ++pixel_failures;
              }
              // d3d11-bridge: what the application painted into the D3D11
@@ -665,20 +669,23 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
 +            // enough for the bridge to stop copying: then the runtime's image
 +            // must keep older content. The first frame after the gap names
 +            // the swapchain again and has to find its last release there.
-             if (g_d3d11_bridge_mode && frame_sequence_succeeded) {
+             if ((g_d3d11_bridge_mode || g_vulkan_bridge_mode) && frame_sequence_succeeded) {
                  std::uint8_t found = 0;
+                 const auto expected = g_late_paint_mode && index >= 1
+                     ? static_cast<std::uint8_t>(red + 1)
+                     : red;
 +                const bool skipped = in_gap && gap_index >= kUnsubmittedSkipFrom;
                  if (!d3d12_image_first_red(
                          g_application_swapchain_images[acquired_index].Get(), &found) ||
--                    found != red) {
-+                    (skipped ? found == red : found != red)) {
+-                    found != expected) {
++                    (skipped ? found == expected : found != expected)) {
                      ++pixel_failures;
                  }
 +                stale_checks += skipped ? 1 : 0;
              }
          }
          const bool teardown_succeeded =
-@@ -3243,6 +3283,17 @@ int main(int argc, char** argv) {
+@@ -3374,6 +3413,17 @@ int main(int argc, char** argv) {
              g_off_thread_frame_calls.load(std::memory_order_relaxed);
          const std::uint32_t synthetic_acquires =
              g_synthetic_acquire_calls.load(std::memory_order_relaxed);
@@ -696,7 +703,7 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
          // swapchain-budget: exactly one refusal, the deeper attempt's fourth
          // private swapchain, and every swapchain the layer got is given back.
          const std::uint32_t refusals = g_budget_refusals.load(std::memory_order_relaxed);
-@@ -3254,7 +3305,7 @@ int main(int argc, char** argv) {
+@@ -3385,7 +3435,7 @@ int main(int argc, char** argv) {
          // inline here; only the single-threaded device forbids a presenter.
          const bool valid = frame_sequence_succeeded && teardown_succeeded &&
              (off_thread == 0 || g_vulkan_mode) && pixel_failures == 0 &&
@@ -705,15 +712,15 @@ diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
              (!g_d3d11_bridge_mode ||
               g_bridge_session_bound.load(std::memory_order_acquire)) &&
              // The private depth swapchain's information never reaches the
-@@ -3267,6 +3318,7 @@ int main(int argc, char** argv) {
-         if (!valid) {
-             std::cerr << (g_vulkan_mode ? "Vulkan"
+@@ -3399,6 +3449,7 @@ int main(int argc, char** argv) {
+             std::cerr << (g_vulkan_bridge_mode ? "Vulkan bridge" : g_vulkan_mode ? "Vulkan"
                            : g_acquire_ahead_mode ? "D3D11 bridge, acquire ahead"
+                           : g_late_paint_mode ? "D3D11 bridge, late paint"
 +                          : g_unsubmitted_mode ? "D3D11 bridge, unsubmitted"
                            : g_d3d11_bridge_mode ? "D3D11 bridge"
                                                  : "single-threaded D3D11")
                        << " validation failed: sequence="
-@@ -3274,6 +3326,8 @@ int main(int argc, char** argv) {
+@@ -3406,6 +3457,8 @@ int main(int argc, char** argv) {
                        << teardown_succeeded << " off-thread=" << off_thread
                        << " synthetic=" << synthetic_acquires
                        << " stale-pixels=" << pixel_failures

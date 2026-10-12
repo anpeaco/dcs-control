@@ -1,5 +1,4 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d695966..8a3a350 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -213,6 +213,7 @@ if(WIN32 AND XRFG_BUILD_LAYER)
@@ -10,7 +9,7 @@ index d695966..8a3a350 100644
          src/vulkan/vulkan_d3d12_interop.cpp
          src/d3d12/d3d12_history.cpp
          src/d3d12/d3d12_frame_synthesizer.cpp
-@@ -815,6 +816,22 @@ if(WIN32 AND XRFG_BUILD_LAYER)
+@@ -920,6 +921,22 @@ if(WIN32 AND XRFG_BUILD_LAYER)
                  "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/adaptive-frame-gen"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/layer_adaptive_frame_gen.cmake")
          set_tests_properties(xrfg_layer_adaptive_frame_gen PROPERTIES TIMEOUT 120)
@@ -34,10 +33,9 @@ index d695966..8a3a350 100644
          # 3X's synthetic ring (the call chain expects two synthetic slots
          # whenever adaptive_frame_gen=1), and the scenarios hold as they are.
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
-index 9e9a09a..dfe9318 100644
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -177,20 +177,35 @@ enum class BridgeFlightOperation : std::uint32_t {
+@@ -236,20 +236,35 @@ enum class BridgeFlightOperation : std::uint32_t {
      // had headroom for 2X, 2 its p90 work was over two display periods in
      // 2X, 3 2X missed slots, 4 the ini's triple_frame_gen changed, 5 adaptive
      // turned on (a=0) or off (b=0). a= the multiplier before, b= after, c= the
@@ -79,7 +77,7 @@ index 9e9a09a..dfe9318 100644
  };
  
  struct BridgeFlightToken {
-@@ -239,6 +254,16 @@ public:
+@@ -315,6 +330,16 @@ public:
          std::uint64_t b = 0,
          std::uint64_t c = 0) noexcept;
  
@@ -97,7 +95,6 @@ index 9e9a09a..dfe9318 100644
      struct Impl;
      std::unique_ptr<Impl> impl_;
 diff --git a/include/xrfg/d3d11_bridge.hpp b/include/xrfg/d3d11_bridge.hpp
-index b1385a5..e473c87 100644
 --- a/include/xrfg/d3d11_bridge.hpp
 +++ b/include/xrfg/d3d11_bridge.hpp
 @@ -132,6 +132,14 @@ public:
@@ -117,7 +114,6 @@ index b1385a5..e473c87 100644
      std::unique_ptr<Impl> impl_;
 diff --git a/include/xrfg/frame_gpu_timer.hpp b/include/xrfg/frame_gpu_timer.hpp
 new file mode 100644
-index 0000000..e3a2495
 --- /dev/null
 +++ b/include/xrfg/frame_gpu_timer.hpp
 @@ -0,0 +1,130 @@
@@ -252,7 +248,6 @@ index 0000000..e3a2495
 +
 +} // namespace xrfg
 diff --git a/include/xrfg/latency_control.hpp b/include/xrfg/latency_control.hpp
-index 38cdf48..4cfd3da 100644
 --- a/include/xrfg/latency_control.hpp
 +++ b/include/xrfg/latency_control.hpp
 @@ -60,6 +60,9 @@ struct TripleReleaseTuner {
@@ -418,7 +413,6 @@ index 38cdf48..4cfd3da 100644
      std::size_t late_count_{};
      std::size_t late_next_{};
 diff --git a/src/core/latency_control.cpp b/src/core/latency_control.cpp
-index 94ad824..3c81a2b 100644
 --- a/src/core/latency_control.cpp
 +++ b/src/core/latency_control.cpp
 @@ -76,6 +76,77 @@ TripleReleaseWindow observe_triple_release(
@@ -635,7 +629,6 @@ index 94ad824..3c81a2b 100644
              decision.stats.p90 <= decision.threshold) {
              decision.target = 2;
 diff --git a/src/d3d11/d3d11_bridge.cpp b/src/d3d11/d3d11_bridge.cpp
-index a60589f..a9484fb 100644
 --- a/src/d3d11/d3d11_bridge.cpp
 +++ b/src/d3d11/d3d11_bridge.cpp
 @@ -61,6 +61,9 @@ struct D3D11BridgeSwapchain::Impl {
@@ -807,7 +800,6 @@ index a60589f..a9484fb 100644
          std::scoped_lock lock(impl_->mutex);
 diff --git a/src/d3d11/frame_gpu_timer.cpp b/src/d3d11/frame_gpu_timer.cpp
 new file mode 100644
-index 0000000..2ab275a
 --- /dev/null
 +++ b/src/d3d11/frame_gpu_timer.cpp
 @@ -0,0 +1,303 @@
@@ -1115,10 +1107,9 @@ index 0000000..2ab275a
 +
 +} // namespace xrfg
 diff --git a/src/d3d12/d3d12_frame_synthesizer.cpp b/src/d3d12/d3d12_frame_synthesizer.cpp
-index 7ea8e4b..932747c 100644
 --- a/src/d3d12/d3d12_frame_synthesizer.cpp
 +++ b/src/d3d12/d3d12_frame_synthesizer.cpp
-@@ -756,6 +756,16 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -778,6 +778,16 @@ struct D3D12FrameSynthesizer::Impl {
      // it is a moment that can be compared to when the frame was submitted.
      std::uint64_t calibration_gpu_ticks{};
      std::uint64_t calibration_qpc_ticks{};
@@ -1135,7 +1126,7 @@ index 7ea8e4b..932747c 100644
      std::uint64_t qpc_frequency{};
      ComPtr<ID3D12Resource> nvidia_timestamp_readback;
      HANDLE fence_event{};
-@@ -1591,6 +1601,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1613,6 +1623,7 @@ struct D3D12FrameSynthesizer::Impl {
              calibration_gpu_ticks = 0;
              calibration_qpc_ticks = 0;
          }
@@ -1143,7 +1134,7 @@ index 7ea8e4b..932747c 100644
          result = device->CreateQueryHeap(
              &query_description,
              IID_PPV_ARGS(nvidia_timestamp_heap.GetAddressOf()));
-@@ -2193,6 +2204,23 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2215,6 +2226,23 @@ struct D3D12FrameSynthesizer::Impl {
              : static_cast<std::uint64_t>(microseconds + 0.5L);
      }
  
@@ -1167,7 +1158,7 @@ index 7ea8e4b..932747c 100644
      [[nodiscard]] HRESULT harvest_nvidia_gpu_timing(
          WorkSlot& slot) noexcept {
          if (!nvidia_gpu_timing_enabled || !slot.timing_pending) {
-@@ -2226,6 +2254,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2248,6 +2276,7 @@ struct D3D12FrameSynthesizer::Impl {
          // The span marks are written by both backends; the stage marks only
          // by NVIDIA, so their ordering is checked only where they exist.
          slot.cached_timing = slot.timing_metadata;
@@ -1176,10 +1167,9 @@ index 7ea8e4b..932747c 100644
          slot.cached_timing.gpu_end_qpc = timestamp_qpc(values[kSpanEnd]);
          slot.cached_timing.total_microseconds = timestamp_microseconds(
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
-index e774d08..48f6526 100644
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -100,6 +100,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -112,6 +112,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "latency_status";
      case BridgeFlightOperation::display_time_correction:
          return "display_time_correction";
@@ -1188,7 +1178,7 @@ index e774d08..48f6526 100644
      case BridgeFlightOperation::synthesis_frame_start_wait:
          return "synthesis_frame_start_wait";
      case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
-@@ -492,6 +494,32 @@ void BridgeFlightLogger::event(
+@@ -779,6 +781,32 @@ void BridgeFlightLogger::event(
          c);
  }
  
@@ -1222,7 +1212,6 @@ index e774d08..48f6526 100644
      static BridgeFlightLogger logger;
      return logger;
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index 369c51c..73750aa 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
 @@ -3,6 +3,7 @@
@@ -1233,7 +1222,7 @@ index 369c51c..73750aa 100644
  #include "xrfg/vulkan_d3d12_interop.hpp"
  #include "xrfg/bridge_flight_logger.hpp"
  #include "xrfg/generation_backpressure.hpp"
-@@ -733,26 +734,66 @@ struct JoinProbe {
+@@ -766,26 +767,66 @@ struct JoinProbe {
          at.time_since_epoch()).count();
  }
  
@@ -1310,7 +1299,7 @@ index 369c51c..73750aa 100644
          event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
          if (event_ != nullptr) {
              try {
-@@ -850,10 +891,16 @@ private:
+@@ -883,10 +924,16 @@ private:
                      continue;
                  }
                  const auto ready = std::chrono::steady_clock::now();
@@ -1331,7 +1320,7 @@ index 369c51c..73750aa 100644
              }
          } catch (...) {
          }
-@@ -861,6 +908,7 @@ private:
+@@ -894,6 +941,7 @@ private:
  
      std::mutex* sink_mutex_{};
      xrfg::latency::AdaptiveFrameGenController* sink_{};
@@ -1339,7 +1328,7 @@ index 369c51c..73750aa 100644
      HANDLE event_{};
      std::thread thread_;
      std::mutex mutex_;
-@@ -869,6 +917,87 @@ private:
+@@ -902,6 +950,87 @@ private:
      bool stop_{};
  };
  
@@ -1427,7 +1416,7 @@ index 369c51c..73750aa 100644
  struct SessionState {
      explicit SessionState(std::shared_ptr<Dispatch> next_dispatch)
          : dispatch(std::move(next_dispatch)), manual_control(current_layer_directory()) {}
-@@ -1347,6 +1476,18 @@ struct SessionState {
+@@ -1434,6 +1563,18 @@ struct SessionState {
      // its compositor runs to see the pixels (it waits on the binding queue),
      // which is the margin that test keeps. (DCS VR Control.)
      //
@@ -1446,7 +1435,7 @@ index 369c51c..73750aa 100644
      // It is judged over thirty frames, a second of them, because a frame
      // that runs long is late whatever the delay, and stepping back for each
      // one held the delay far below what the title could take. See
-@@ -1383,6 +1524,18 @@ struct SessionState {
+@@ -1470,6 +1611,18 @@ struct SessionState {
      // of its work. The application's xrEndFrame thread only.
      std::chrono::steady_clock::time_point application_released_at{};
      std::chrono::steady_clock::time_point latency_status_at{};
@@ -1465,8 +1454,8 @@ index 369c51c..73750aa 100644
      std::unique_ptr<ReadinessProbe> readiness_probe;
      // The application's thread only.
      HANDLE application_release_timer{};
-@@ -1842,9 +1995,16 @@ struct FrameGenerationSwapchainState {
-     std::shared_ptr<xrfg::SwapchainInterop> interop;
+@@ -2096,9 +2249,16 @@ struct FrameGenerationSwapchainState {
+     std::shared_ptr<HandoverCopier> copier;
  };
  
 +// DCS VR Control (0004): harvested whenever the synthesizer times (with
@@ -1483,7 +1472,7 @@ index 369c51c..73750aa 100644
          return;
      }
      for (;;) {
-@@ -1866,9 +2026,14 @@ void log_completed_nvidia_gpu_timings(
+@@ -2120,9 +2280,14 @@ void log_completed_nvidia_gpu_timings(
              timing.pack_microseconds,
              timing.eye0_microseconds,
              timing.eye1_microseconds);
@@ -1499,7 +1488,7 @@ index 369c51c..73750aa 100644
              timing.composition_microseconds,
              timing.total_microseconds,
              timing.current_serial);
-@@ -1890,6 +2055,15 @@ void log_completed_nvidia_gpu_timings(
+@@ -2144,6 +2309,15 @@ void log_completed_nvidia_gpu_timings(
      }
  }
  
@@ -1514,8 +1503,8 @@ index 369c51c..73750aa 100644
 +
  struct SwapchainState;
  
- enum class SwapchainEligibilityReason : std::int64_t {
-@@ -2746,7 +2920,7 @@ create_d3d12_frame_generation_swapchains(
+ // The steps a vram_usage record is taken after. A report of what the layer
+@@ -3218,7 +3392,7 @@ create_d3d12_frame_generation_swapchains(
                  : D3D12_RESOURCE_STATE_RENDER_TARGET,
              backend,
              state->session->nvidia_options,
@@ -1524,7 +1513,7 @@ index 369c51c..73750aa 100644
              });
          if (FAILED(gpu_result)) {
              if (failure_reason != nullptr) {
-@@ -2945,7 +3119,7 @@ create_d3d11_frame_generation_swapchains(
+@@ -3453,7 +3627,7 @@ create_d3d11_frame_generation_swapchains(
                      D3D12_RESOURCE_STATE_COMMON,
                      backend,
                      session->nvidia_options,
@@ -1533,7 +1522,7 @@ index 369c51c..73750aa 100644
              });
          if (FAILED(gpu_result)) {
              if (failure_reason != nullptr) {
-@@ -3216,7 +3390,7 @@ create_vulkan_frame_generation_swapchains(
+@@ -3734,7 +3908,7 @@ create_vulkan_frame_generation_swapchains(
                      D3D12_RESOURCE_STATE_COMMON,
                      backend,
                      session->nvidia_options,
@@ -1542,7 +1531,7 @@ index 369c51c..73750aa 100644
              });
          if (FAILED(gpu_result)) {
              if (failure_reason != nullptr) {
-@@ -4574,7 +4748,8 @@ XrResult layer_create_session_impl(
+@@ -5255,7 +5429,8 @@ XrResult layer_create_session_impl(
              state->frames_per_application_frame,
              steady_nanoseconds(std::chrono::steady_clock::now()));
          state->readiness_probe = std::make_unique<ReadinessProbe>(
@@ -1552,7 +1541,7 @@ index 369c51c..73750aa 100644
          xrfg::bridge_flight_logger().event(
              xrfg::BridgeFlightOperation::adaptive_switch,
              static_cast<std::int64_t>(xrfg::latency::AdaptiveReason::enabled),
-@@ -6279,6 +6454,9 @@ struct GeneratedFrameEndInfo {
+@@ -7444,6 +7619,9 @@ struct GeneratedFrameEndInfo {
          std::uint64_t value{};
      };
      std::vector<ReadyFence> synthetic_ready;
@@ -1562,7 +1551,7 @@ index 369c51c..73750aa 100644
      // As on PresenterSubmission, kept here as well so a repeat of this frame
      // can make the same join.
      std::uint64_t app_release_value{};
-@@ -6643,8 +6821,71 @@ struct TripleReleaseReport {
+@@ -7897,8 +8075,71 @@ struct TripleReleaseReport {
      std::int64_t ceiling_us{};
      std::uint32_t late{};
      std::uint32_t unwritten{};
@@ -1634,7 +1623,7 @@ index 369c51c..73750aa 100644
  // Whether the next submission is a frame's first synthetic, queued and
  // written. presenter_mutex held.
  [[nodiscard]] bool triple_leader_ready(const SessionState& state) noexcept {
-@@ -6663,16 +6904,13 @@ void observe_triple_release(
+@@ -7917,16 +8158,13 @@ void observe_triple_release(
      SessionState& state,
      bool leader_ready,
      TripleReleaseReport* report) noexcept {
@@ -1658,7 +1647,7 @@ index 369c51c..73750aa 100644
  }
  
  // 801: the 3X release delay, once a window. a the delay in microseconds; b
-@@ -6681,6 +6919,13 @@ void observe_triple_release(
+@@ -7935,6 +8173,13 @@ void observe_triple_release(
  // ceiling in microseconds. Off SteamVR the test in force is the hand-over
  // itself, so there the two counts agree except for slots that found nothing
  // queued.
@@ -1672,7 +1661,7 @@ index 369c51c..73750aa 100644
  void log_triple_release(const TripleReleaseReport& report) noexcept {
      if (report.delay_us < 0) {
          return;
-@@ -6691,6 +6936,16 @@ void log_triple_release(const TripleReleaseReport& report) noexcept {
+@@ -7945,6 +8190,16 @@ void log_triple_release(const TripleReleaseReport& report) noexcept {
          static_cast<std::uint64_t>(report.delay_us),
          report.late | (static_cast<std::uint64_t>(report.unwritten) << 16),
          static_cast<std::uint64_t>(report.ceiling_us));
@@ -1689,7 +1678,7 @@ index 369c51c..73750aa 100644
  }
  
  void pace_presenter_submission(
-@@ -7436,10 +7691,17 @@ void continuous_presenter_main(
+@@ -8700,10 +8955,17 @@ void continuous_presenter_main(
                                  if (!leader_written) {
                                      ++state->triple_release.window_unwritten;
                                  }
@@ -1711,7 +1700,7 @@ index 369c51c..73750aa 100644
                                  }
                              } else if (!request->owned_frame->synthetic) {
                                  // A real frame is going out, so the next
-@@ -7489,9 +7751,15 @@ void continuous_presenter_main(
+@@ -8753,9 +9015,15 @@ void continuous_presenter_main(
                          ++missed_slots;
                      }
                      if (judge_leader) {
@@ -1728,15 +1717,15 @@ index 369c51c..73750aa 100644
              }
              // Fed to adaptive control in 2X only. In 3X a missed slot is the
              // release delay probing its ceiling (see triple_release) far more
-@@ -8676,6 +8944,7 @@ void stop_continuous_presenter(
- void wait_for_presenter_pair(
-     const std::shared_ptr<SessionState>& state) noexcept {
+@@ -10033,6 +10301,7 @@ void wait_for_presenter_pair(
+     const std::shared_ptr<SessionState>& state,
+     std::uint64_t presenter_frames) noexcept {
      try {
 +        ApplicationBlockedScope blocked; // DCS VR Control (0004)
          // The pair rate does not follow this number: the application enqueues
          // one pair per release and the presenter spends two frames on it -
          // three with 3X - so all it sets is the phase at which the
-@@ -8843,6 +9112,7 @@ void wait_for_presenter_pair(
+@@ -10141,6 +10410,7 @@ void wait_for_presenter_pair(
      const std::shared_ptr<SessionState>& state,
      std::size_t maximum_outstanding) noexcept {
      try {
@@ -1744,7 +1733,7 @@ index 369c51c..73750aa 100644
          std::unique_lock lock(state->presenter_mutex);
          state->presenter_condition.wait(lock, [&] {
              return state->outstanding_presenter_submissions <=
-@@ -8864,6 +9134,7 @@ void wait_for_presenter_pair(
+@@ -10162,6 +10432,7 @@ void wait_for_presenter_pair(
  [[nodiscard]] XrResult wait_for_presenter_idle(
      const std::shared_ptr<SessionState>& state) noexcept {
      try {
@@ -1752,7 +1741,7 @@ index 369c51c..73750aa 100644
          std::unique_lock lock(state->presenter_mutex);
          state->presenter_condition.wait(lock, [&] {
              return state->outstanding_presenter_submissions == 0 ||
-@@ -8930,6 +9201,7 @@ enqueue_presenter_submission(
+@@ -10228,6 +10499,7 @@ enqueue_presenter_submission(
      const std::shared_ptr<SessionState>& state,
      const std::shared_ptr<PresenterSubmission>& request) noexcept {
      try {
@@ -1760,7 +1749,7 @@ index 369c51c..73750aa 100644
          std::unique_lock lock(state->presenter_mutex);
          state->presenter_condition.wait(lock, [&] {
              return request->completed || XR_FAILED(state->presenter_failure) ||
-@@ -9870,7 +10142,8 @@ struct PreparedProjectionFrame {
+@@ -11187,7 +11459,8 @@ struct PreparedProjectionFrame {
                  current_destination_index);
          {
              std::scoped_lock gpu_lock(state->session->gpu_mutex);
@@ -1770,7 +1759,7 @@ index 369c51c..73750aa 100644
              if (generation->interop) {
                  submit_result =
                      generation->interop->prepare_synthesis();
-@@ -10988,6 +11261,9 @@ void note_bridged_submissions(
+@@ -12437,6 +12710,9 @@ void note_bridged_submissions(
              }
              const bool submitted = !complete ||
                  std::find(named.begin(), named.end(), swapchain_state->handle) != named.end();
@@ -1780,7 +1769,7 @@ index 369c51c..73750aa 100644
              const bool copied_before = bridge->copies_on_release();
              const HRESULT result = bridge->frame_ended(submitted);
              const bool copies_now = bridge->copies_on_release();
-@@ -11093,7 +11369,8 @@ void apply_live_frame_multiplier(
+@@ -12542,7 +12818,8 @@ void apply_live_frame_multiplier(
                      state->adaptive_missed_slots = 0;
                      if (!state->readiness_probe) {
                          state->readiness_probe = std::make_unique<ReadinessProbe>(
@@ -1790,7 +1779,7 @@ index 369c51c..73750aa 100644
                      }
                  } else {
                      target = ini_target;
-@@ -11157,6 +11434,27 @@ void apply_live_frame_multiplier(
+@@ -12606,6 +12883,27 @@ void apply_live_frame_multiplier(
                  std::min<std::uint64_t>(stats.samples, 0xFFFFU) |
                      (std::min<std::uint64_t>(stats.late, 0xFFFFU) << 16),
                  static_cast<std::uint64_t>(correction / 1000));
@@ -1818,7 +1807,7 @@ index 369c51c..73750aa 100644
          }
          if (target == 0 || target == current) {
              if (reason == AdaptiveReason::manual) {
-@@ -11191,6 +11489,9 @@ void apply_live_frame_multiplier(
+@@ -12640,6 +12938,9 @@ void apply_live_frame_multiplier(
              deep = state->deep_pipeline;
              // The release delay belongs to the shape it was found in.
              state->triple_release.reset();
@@ -1828,8 +1817,8 @@ index 369c51c..73750aa 100644
              state->triple_release_probe_due = false;
              state->triple_leader_due = false;
              // The display time correction too, scaled to the new period or
-@@ -11249,6 +11550,124 @@ void apply_live_frame_multiplier(
-     }
+@@ -12754,6 +13055,124 @@ void log_video_memory_periodically(SessionState& state) noexcept {
+     log_video_memory(state, VideoMemoryStage::periodic, 0);
  }
  
 +// DCS VR Control (0004): the GPU timer for adaptive 2X/3X's evidence, made
@@ -1953,7 +1942,7 @@ index 369c51c..73750aa 100644
  XrResult layer_end_frame_impl(
      XrSession session,
      const XrFrameEndInfo* end_info) {
-@@ -11256,6 +11675,11 @@ XrResult layer_end_frame_impl(
+@@ -12761,6 +13180,11 @@ XrResult layer_end_frame_impl(
      if (!state || state->dispatch->end_frame == nullptr) {
          return XR_ERROR_HANDLE_INVALID;
      }
@@ -1965,7 +1954,7 @@ index 369c51c..73750aa 100644
      PrivateDepthStrip private_depth_strip;
      end_info = strip_private_depth(*state, end_info, private_depth_strip);
  
-@@ -11931,16 +12355,36 @@ XrResult layer_end_frame_impl(
+@@ -13487,16 +13911,36 @@ XrResult layer_end_frame_impl(
              // synthetic; see ReadinessProbe. Taken before the presenter can
              // see the frame.
              ReadinessProbe::Item readiness{};
@@ -2005,7 +1994,7 @@ index 369c51c..73750aa 100644
              }
              result = enqueue_presenter_pair(
                  state,
-@@ -12356,6 +12800,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_wait_frame(
+@@ -13965,6 +14409,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_wait_frame(
      const auto token = xrfg::bridge_flight_logger().begin(
          xrfg::BridgeFlightOperation::application_wait_frame,
          handle_value(session));
@@ -2013,7 +2002,7 @@ index 369c51c..73750aa 100644
      const XrResult result = guard_c_api_boundary([&] {
          return layer_wait_frame_impl(session, wait_info, frame_state);
      });
-@@ -12379,6 +12824,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_begin_frame(
+@@ -13988,6 +14433,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_begin_frame(
      const auto token = xrfg::bridge_flight_logger().begin(
          xrfg::BridgeFlightOperation::application_begin_frame,
          handle_value(session));
@@ -2021,7 +2010,7 @@ index 369c51c..73750aa 100644
      const XrResult result = guard_c_api_boundary([&] {
          return layer_begin_frame_impl(session, begin_info);
      });
-@@ -12517,6 +12963,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_acquire_swapchain_image(
+@@ -14187,6 +14633,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_acquire_swapchain_image(
      const auto token = xrfg::bridge_flight_logger().begin(
          xrfg::BridgeFlightOperation::application_swapchain_acquire,
          handle_value(swapchain));
@@ -2029,7 +2018,7 @@ index 369c51c..73750aa 100644
      const XrResult result = guard_c_api_boundary([&] {
          return layer_acquire_swapchain_image_impl(swapchain, acquire_info, index);
      });
-@@ -12536,6 +12983,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_wait_swapchain_image(
+@@ -14206,6 +14653,7 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_wait_swapchain_image(
          xrfg::BridgeFlightOperation::application_swapchain_wait,
          handle_value(swapchain),
          wait_info ? static_cast<std::uint64_t>(wait_info->timeout) : 0);
@@ -2038,7 +2027,6 @@ index 369c51c..73750aa 100644
          return layer_wait_swapchain_image_impl(swapchain, wait_info);
      });
 diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
-index 6605794..7e8b8d2 100644
 --- a/tests/bridge_flight_logger_tests.cpp
 +++ b/tests/bridge_flight_logger_tests.cpp
 @@ -151,6 +151,20 @@ int main(int argc, char** argv) {
@@ -2076,7 +2064,6 @@ index 6605794..7e8b8d2 100644
          std::cout << "Bridge flight logger tests passed.\n";
          return 0;
 diff --git a/tests/d3d11_bridge_tests.cpp b/tests/d3d11_bridge_tests.cpp
-index 82d858d..d1c7bab 100644
 --- a/tests/d3d11_bridge_tests.cpp
 +++ b/tests/d3d11_bridge_tests.cpp
 @@ -5,9 +5,12 @@
@@ -2199,7 +2186,6 @@ index 82d858d..d1c7bab 100644
          std::cerr << g_failures << " D3D11 bridge check(s) failed\n";
          return 1;
 diff --git a/tests/latency_control_tests.cpp b/tests/latency_control_tests.cpp
-index 1bddd30..6406bcb 100644
 --- a/tests/latency_control_tests.cpp
 +++ b/tests/latency_control_tests.cpp
 @@ -191,10 +191,126 @@ struct TellSimulation {
@@ -2470,7 +2456,6 @@ index 1bddd30..6406bcb 100644
          std::cout << "Latency control tests passed\n";
 diff --git a/tests/layer_adaptive_throughput.cmake b/tests/layer_adaptive_throughput.cmake
 new file mode 100644
-index 0000000..80c35f3
 --- /dev/null
 +++ b/tests/layer_adaptive_throughput.cmake
 @@ -0,0 +1,82 @@
@@ -2557,7 +2542,6 @@ index 0000000..80c35f3
 +    endif()
 +endif()
 diff --git a/tests/layer_call_chain.cpp b/tests/layer_call_chain.cpp
-index e4e117d..be0062d 100644
 --- a/tests/layer_call_chain.cpp
 +++ b/tests/layer_call_chain.cpp
 @@ -19,7 +19,9 @@
@@ -2570,7 +2554,7 @@ index e4e117d..be0062d 100644
  #include <filesystem>
  #include <fstream>
  #include <iostream>
-@@ -171,6 +173,30 @@ bool g_display_latency_mode = false;
+@@ -197,6 +199,30 @@ bool g_display_latency_mode = false;
  // time it is told must again be its real frame's.
  bool g_adaptive_latency_mode = false;
  int g_simulated_render_ms = 0;
@@ -2601,7 +2585,7 @@ index e4e117d..be0062d 100644
  std::mutex g_told_mutex;
  std::vector<std::pair<float, XrTime>> g_told_by_pose;
  bool g_flight_simulator_mode = false;
-@@ -547,6 +573,154 @@ void pace_like_a_display() {
+@@ -590,6 +616,154 @@ void pace_like_a_display() {
      }
  }
  
@@ -2756,17 +2740,20 @@ index e4e117d..be0062d 100644
  // A sleep that is not rounded up to the system tick.
  void precise_sleep(std::chrono::nanoseconds duration) {
      static thread_local HANDLE timer = [] {
-@@ -2168,7 +2342,8 @@ int main(int argc, char** argv) {
+@@ -2258,9 +2432,9 @@ int main(int argc, char** argv) {
              "d3d11-double-wide|steamvr-inline|steamvr-presenter|"
              "flight-simulator|uevr-pipelined-time|inverted-fov|"
              "d3d11-inverted-fov|d3d11-single-threaded|vulkan|swapchain-budget|"
 -            "dcs|dcs-d3d11|dcs-latency|dcs-adaptive|d3d11-bridge|"
+-            "d3d11-bridge-acquire-ahead|d3d11-bridge-late-paint|"
+-            "d3d11-bridge-unsubmitted|steamvr-own-time]\n";
 +            "dcs|dcs-d3d11|dcs-latency|dcs-adaptive|dcs-throughput-down|"
-+            "dcs-throughput-gpu|d3d11-bridge|"
-             "d3d11-bridge-acquire-ahead|d3d11-bridge-unsubmitted]\n";
++            "dcs-throughput-gpu|d3d11-bridge|d3d11-bridge-acquire-ahead|"
++            "d3d11-bridge-late-paint|d3d11-bridge-unsubmitted|steamvr-own-time]\n";
          return EXIT_FAILURE;
      }
-@@ -2181,6 +2356,17 @@ int main(int argc, char** argv) {
+     g_dcs_d3d11_mode = argc == 4 && std::strcmp(argv[3], "dcs-d3d11") == 0;
+@@ -2274,6 +2448,17 @@ int main(int argc, char** argv) {
          (argc == 4 && std::strcmp(argv[3], "d3d11-bridge") == 0);
      g_adaptive_latency_mode =
          argc == 4 && std::strcmp(argv[3], "dcs-adaptive") == 0;
@@ -2784,7 +2771,7 @@ index e4e117d..be0062d 100644
      g_display_latency_mode = g_adaptive_latency_mode ||
          (argc == 4 && std::strcmp(argv[3], "dcs-latency") == 0);
      g_dcs_mode = g_dcs_d3d11_mode || g_display_latency_mode ||
-@@ -3470,6 +3656,9 @@ int main(int argc, char** argv) {
+@@ -3601,6 +3786,9 @@ int main(int argc, char** argv) {
          // has to begin that frame instead of waiting for its own.
          bool sequence_succeeded = true;
          bool presenter_seen = false;
@@ -2794,7 +2781,7 @@ index e4e117d..be0062d 100644
          XrFrameState pending{XR_TYPE_FRAME_STATE};
          sequence_succeeded =
              XR_SUCCEEDED(wait_frame(session, &frame_wait_info, &pending));
-@@ -3488,7 +3677,22 @@ int main(int argc, char** argv) {
+@@ -3619,7 +3807,22 @@ int main(int argc, char** argv) {
              };
              bool ok = true;
              if (overlapping) {
@@ -2818,7 +2805,7 @@ index e4e117d..be0062d 100644
                  while (!wait_started.load(std::memory_order_acquire)) {
                      std::this_thread::yield();
                  }
-@@ -3497,15 +3701,48 @@ int main(int argc, char** argv) {
+@@ -3628,15 +3831,48 @@ int main(int argc, char** argv) {
                  } else {
                      std::this_thread::sleep_for(std::chrono::milliseconds(2));
                  }
@@ -2872,7 +2859,7 @@ index e4e117d..be0062d 100644
              } else {
                  ok = XR_SUCCEEDED(begin_frame(session, &frame_begin_info)) &&
                      capture_fresh_application_image() &&
-@@ -3614,7 +3851,30 @@ int main(int argc, char** argv) {
+@@ -3745,7 +3981,30 @@ int main(int argc, char** argv) {
          bool adaptive_downshift_seen = false;
          bool adaptive_upshift_seen = false;
          bool adaptive_moved_after = false;
@@ -2904,7 +2891,7 @@ index e4e117d..be0062d 100644
              int phase = 0;
              for (int index = 0; sequence_succeeded && phase < 2 && index < 1500;
                   ++index) {
-@@ -3684,6 +3944,49 @@ int main(int argc, char** argv) {
+@@ -3815,6 +4074,49 @@ int main(int argc, char** argv) {
          const std::uint32_t off_thread =
              g_off_thread_frame_calls.load(std::memory_order_relaxed);
          bool valid = false;

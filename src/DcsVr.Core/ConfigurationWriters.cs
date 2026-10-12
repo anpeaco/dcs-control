@@ -281,6 +281,8 @@ public static class ConfigurationWriters
         visibility_mask={(p.OfxrVisibilityMask ? 1 : 0)}
         history_in_place={(p.OfxrHistoryInPlace ? 1 : 0)}
         lazy_runtime_swapchains={(p.OfxrLazySwapchains ? 1 : 0)}
+        single_swapchain_rings={(p.OfxrSingleRings ? 1 : 0)}
+        capture_at_end_frame={(p.OfxrCaptureAtEndFrame ? 1 : 0)}
 
         [diagnostics]
         logging_enabled={(p.DiagnosticRecorder ? 1 : 0)}

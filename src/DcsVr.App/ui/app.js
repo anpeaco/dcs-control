@@ -530,6 +530,8 @@ function buildFields() {
   field(more,'ofxrVisibilityMask','Skip pixels outside the lens','Optical flow and generation skip what the lens never shows, where the headset runtime reports it.','toggle',null,fg);
   field(more,'ofxrHistoryInPlace','Read frames in place','Generation reads DCS\'s frames where they are instead of copying them first. Saves GPU time and memory.','toggle',null,fg);
   field(more,'ofxrLazySwapchains','Headset images on demand','The runtime\'s images for DCS\'s frames are created only when DCS shows one. Saves video memory.','toggle',null,fg);
+  field(more,'ofxrSingleRings','Fewer headset images','One image ring per generated output instead of two, copied in as each frame is handed over. Saves video memory the headset runtime holds, most with 2×; with 3× it saves little.','toggle',null,fg);
+  field(more,'ofxrCaptureAtEndFrame','Copy eyes at frame end','OFXR copies each eye when DCS finishes the frame rather than when it lets go of the eye, so an eye drawn to late is never a frame old on its own.','toggle',null,fg);
   more = disclosure(c,'In-headset diagnostics','Status panel and its key, VRAM counter, OFXR counter and log.');
   field(more,'diagnosticOverlayKey','Diagnostic panel key','Shows or hides FPS, DLSS 5 and frame generation status in the headset, for the current flight. Click, then press the keys. Default Alt+Shift+F12.','hotkey',null,p => p.frameGen !== 'Off');
   field(more,'diagnosticOverlayAtStart','Panel visible at start','Each flight starts with the diagnostic panel shown.','toggle',null,p => p.frameGen !== 'Off');

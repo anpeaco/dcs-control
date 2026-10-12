@@ -8,7 +8,7 @@ public sealed record CadencePlan(double RefreshHz, double RequiredRenderedFps, d
 public static class FramePacing
 {
     // DCS's installed optionsDb.lua exposes graphics.maxFPS as 30..300.
-    // OFXR (the djules75 fork, 0.2.9.1) paces at run time but has no FPS limiter INI key.
+    // OFXR (the djules75 fork, 0.2.13.2) paces at run time but has no FPS limiter INI key.
     public static double? RequestedCap(VrProfile profile) => profile.FpsLimit switch
     {
         FpsLimitMode.Preserve => null,

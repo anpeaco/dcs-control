@@ -8,6 +8,10 @@
 
 **What's new**: the first start after an update shows that version's release notes once; click the version number at the bottom of the left rail to see them again.
 
+**Frame generation on OFXR 0.2.13.2**: OFXR moves from the djules75 fork's 0.2.9.1 to 0.2.13.2, with all of DCS Control's own OFXR changes carried over. It brings the fork's smoother pacing on Virtual Desktop (no more slow loss of frame rate), no ghosting in dark scenes, and each eye taken when DCS ends its frame, so neither eye shows a frame-old image on its own. Two new switches under Advanced frame generation: **Fewer headset images** and **Copy eyes at frame end** (both on, as in OFXR).
+- **3× with fewer headset images fixed**: in 3×, OFXR's VRAM-saving mode wrote each frame's two generated images into the same two textures the frame before had used. Under GPU load it then refused most frames and backed off for longer each time: in a test with the GPU at its limit, 78 generated frames out of 950. It now gives 3× four textures (946 of 950 in the same test).
+- **Per-frame CPU and GPU time** (the panel's load line and Last flight) come with this OFXR as well.
+
 # 0.5.5 preview
 
 **Terrain prefetch fix moved into Engine Optimizations**: the fix for DCS's terrain workers, which ask Windows to prefetch the same memory ranges about a million times a second, now runs inside the engine optimizations module instead of a separate DLL. It is an option on the Engine Optimizations page (Off, Observe, Skip repeats; Skip by default) and no longer part of CPU Boost. Measured in an A/B: about 4 % less DCS CPU, more on CPU-bound scenes.

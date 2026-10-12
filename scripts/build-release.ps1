@@ -58,7 +58,7 @@ try {
 foreach ($archive in @('OFXR-Bridge-v0.2.1-V116.zip')) {
     Copy-Item -LiteralPath (Join-Path $workspaceRoot ".cache/packages/$archive") -Destination (Join-Path $payloadRoot 'packages') -Force
 }
-# OFXR layer built from the djules75 fork 0.2.9.1 (scripts/build-ofxr-djules75.ps1): the DCS-compatible build, used for every framegen profile.
+# OFXR layer built from the djules75 fork 0.2.13.2 (scripts/build-ofxr-djules75.ps1): the DCS-compatible build, used for every framegen profile.
 New-Item -ItemType Directory -Path (Join-Path $payloadRoot 'components/ofxr') -Force | Out-Null
 $deferredOfxr = Join-Path $payloadRoot 'components/ofxr/XR_APILAYER_XRFrameBridge_diagnostic.dll'
 Copy-Item -LiteralPath (Join-Path $workspaceRoot 'artifacts/native/ofxr-djules75/XR_APILAYER_XRFrameBridge_diagnostic.dll') -Destination $deferredOfxr -Force

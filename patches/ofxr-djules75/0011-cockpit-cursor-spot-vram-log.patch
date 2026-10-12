@@ -1,5 +1,4 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4dfb4e9..dc6065d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -159,6 +159,7 @@ if(WIN32 AND XRFG_BUILD_LAYER)
@@ -38,10 +37,9 @@ index 4dfb4e9..dc6065d 100644
          "${XRFG_CURSOR_COMPOSITE_PIXEL_HEADER}")
      target_include_directories(xrfg_d3d12_history
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
-index 8d6b94d..65845a1 100644
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -287,7 +287,23 @@ enum class BridgeFlightOperation : std::uint32_t {
+@@ -346,7 +346,23 @@ enum class BridgeFlightOperation : std::uint32_t {
      //     templates loaded, b= where from (1 DCS's Visualizer.dll in the
      //     process, 2 Visualizer.dll in cursor_templates, 3 the built-in
      //     arrow), c= the HRESULT of turning it on.
@@ -66,7 +64,6 @@ index 8d6b94d..65845a1 100644
  
  struct BridgeFlightToken {
 diff --git a/include/xrfg/d3d12_frame_synthesizer.hpp b/include/xrfg/d3d12_frame_synthesizer.hpp
-index 53aec9f..9631b9f 100644
 --- a/include/xrfg/d3d12_frame_synthesizer.hpp
 +++ b/include/xrfg/d3d12_frame_synthesizer.hpp
 @@ -9,6 +9,7 @@
@@ -106,7 +103,6 @@ index 53aec9f..9631b9f 100644
      std::uint32_t matchable_templates{};
  };
 diff --git a/include/xrfg/smooth_cursor_templates.hpp b/include/xrfg/smooth_cursor_templates.hpp
-index e0e939e..6d1ad5c 100644
 --- a/include/xrfg/smooth_cursor_templates.hpp
 +++ b/include/xrfg/smooth_cursor_templates.hpp
 @@ -30,10 +30,10 @@ struct CursorTemplateSet {
@@ -125,7 +121,6 @@ index e0e939e..6d1ad5c 100644
  
  // Decodes the bits of one RT_CURSOR resource (a hotspot, then a DIB with its
 diff --git a/src/d3d12/d3d12_frame_synthesizer.cpp b/src/d3d12/d3d12_frame_synthesizer.cpp
-index ac1ebe8..94312ad 100644
 --- a/src/d3d12/d3d12_frame_synthesizer.cpp
 +++ b/src/d3d12/d3d12_frame_synthesizer.cpp
 @@ -2,6 +2,9 @@
@@ -146,7 +141,7 @@ index ac1ebe8..94312ad 100644
  #include "cursor_motion_shader.hpp"
  #include "cursor_region_vertex_shader.hpp"
  #include "cursor_search_shader.hpp"
-@@ -345,8 +349,15 @@ constexpr UINT kCursorStateWords = 1024;
+@@ -367,8 +371,15 @@ constexpr UINT kCursorStateWords = 1024;
  // each with a candidate per template.
  constexpr UINT kCursorListEntries = 400;
  constexpr UINT kCursorStatsBase = 192;
@@ -163,7 +158,7 @@ index ac1ebe8..94312ad 100644
  constexpr UINT kCursorNoEntry = 2;
  
  struct CursorParameters {
-@@ -484,6 +495,91 @@ constexpr UINT kCursorFlagMouseKnown = 4U;
+@@ -503,6 +514,91 @@ constexpr UINT kCursorFlagMouseKnown = 4U;
      return words;
  }
  
@@ -255,7 +250,7 @@ index ac1ebe8..94312ad 100644
  [[nodiscard]] bool finite(float value) noexcept {
      return std::isfinite(value);
  }
-@@ -865,6 +961,8 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -884,6 +980,8 @@ struct D3D12FrameSynthesizer::Impl {
          ComPtr<ID3D12GraphicsCommandList> cursor_command_list;
          bool cursor_recorded{};
          bool cursor_timed{};
@@ -264,7 +259,7 @@ index ac1ebe8..94312ad 100644
          // Nonzero while this slot's copy of the cursor counters waits to be
          // read: the order it was submitted in.
          std::uint64_t cursor_order{};
-@@ -1039,6 +1137,20 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -1058,6 +1156,20 @@ struct D3D12FrameSynthesizer::Impl {
      ComPtr<ID3D12PipelineState> cursor_search_pipeline;
      ComPtr<ID3D12PipelineState> cursor_verify_pipeline;
      ComPtr<ID3D12PipelineState> cursor_gate_pipeline;
@@ -285,7 +280,7 @@ index ac1ebe8..94312ad 100644
      // The pass that redraws the pixels around the cursor after the
      // composition (frame_synthesis.hlsl CursorRegionVS/CursorCompositePS).
      ComPtr<ID3D12PipelineState> cursor_composite_pipeline;
-@@ -2058,6 +2170,10 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2077,6 +2189,10 @@ struct D3D12FrameSynthesizer::Impl {
              result = pipeline(g_xrfg_cursor_gate_shader,
                  sizeof(g_xrfg_cursor_gate_shader), &cursor_gate_pipeline);
          }
@@ -296,7 +291,7 @@ index ac1ebe8..94312ad 100644
          if (SUCCEEDED(result)) {
              D3D12_INDIRECT_ARGUMENT_DESC dispatch{};
              dispatch.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-@@ -2241,6 +2357,30 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2260,6 +2376,30 @@ struct D3D12FrameSynthesizer::Impl {
              }
              ID3D12CommandList* lists[] = {cursor_upload_list.Get()};
              queue->ExecuteCommandLists(1, lists);
@@ -327,7 +322,7 @@ index ac1ebe8..94312ad 100644
              cursor_tiles_x = tiles_x;
              cursor_tiles_y = tiles_y;
              cursor_template_count = static_cast<UINT>(options.templates.size());
-@@ -2293,6 +2433,11 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2312,6 +2452,11 @@ struct D3D12FrameSynthesizer::Impl {
              }
          }
          cursor_plan.current_entry = 1U - cursor_plan.previous_entry;
@@ -339,7 +334,7 @@ index ac1ebe8..94312ad 100644
          cursor_plan.mouse_known =
              previous_serial != 0 && cursor_pointer_serial == previous_serial;
          if (cursor_plan.mouse_known) {
-@@ -2314,10 +2459,17 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2333,10 +2478,17 @@ struct D3D12FrameSynthesizer::Impl {
                  cursor_entry_serial[cursor_plan.previous_entry] = previous_serial;
                  cursor_entry_serial[cursor_plan.current_entry] = current_serial;
                  slot.cursor_order = cursor_next_order++;
@@ -357,7 +352,7 @@ index ac1ebe8..94312ad 100644
          if (cursor_position_known) {
              cursor_pointer_serial = current_serial;
              cursor_pointer_x = cursor_x;
-@@ -2424,6 +2576,22 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2443,6 +2595,22 @@ struct D3D12FrameSynthesizer::Impl {
          list->SetComputeRoot32BitConstants(5, kCursorConstantCount, &parameters, 0);
          list->SetPipelineState(cursor_gate_pipeline.Get());
          list->Dispatch(1, 1, 1);
@@ -380,7 +375,7 @@ index ac1ebe8..94312ad 100644
          // The counters go to this slot's readback region, read when the slot
          // is next taken.
          const D3D12_RESOURCE_BARRIER to_copy = transition_barrier(
-@@ -2483,6 +2651,9 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2502,6 +2670,9 @@ struct D3D12FrameSynthesizer::Impl {
                  cursor_stats.busy = values[7];
                  cursor_stats.acquired = values[8];
                  cursor_stats.tracked = values[9];
@@ -390,7 +385,7 @@ index ac1ebe8..94312ad 100644
              }
          }
          slot.cursor_order = 0;
-@@ -2492,6 +2663,44 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2511,6 +2682,44 @@ struct D3D12FrameSynthesizer::Impl {
          for (WorkSlot& slot : work_slots) {
              harvest_cursor_stats(slot);
          }
@@ -435,7 +430,7 @@ index ac1ebe8..94312ad 100644
      }
  
      // Once a second while the feature is on, into the flight log
-@@ -2530,6 +2739,17 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -2549,6 +2758,17 @@ struct D3D12FrameSynthesizer::Impl {
          if (a != 0U || b != 0U || d != 0U) {
              bridge_flight_logger().event(BridgeFlightOperation::smooth_cursor, 1, a, b, d);
          }
@@ -453,7 +448,7 @@ index ac1ebe8..94312ad 100644
          cursor_logged = cursor_stats;
      }
      // ---------------------------------------------------------------------
-@@ -5714,6 +5934,7 @@ struct D3D12FrameSynthesizer::Impl {
+@@ -5736,6 +5956,7 @@ struct D3D12FrameSynthesizer::Impl {
              previous.producer_fence.Get(),
              previous.ticket.fence_value);
          if (FAILED(result)) {
@@ -462,10 +457,9 @@ index ac1ebe8..94312ad 100644
              return result;
          }
 diff --git a/src/d3d12/frame_synthesis.hlsl b/src/d3d12/frame_synthesis.hlsl
-index ec9c3df..28e9776 100644
 --- a/src/d3d12/frame_synthesis.hlsl
 +++ b/src/d3d12/frame_synthesis.hlsl
-@@ -224,15 +224,21 @@ float4 bilinear_current_source(float2 coordinate, uint slice) {
+@@ -260,15 +260,21 @@ float4 bilinear_current_source(float2 coordinate, uint slice) {
          top_left + int2(1, 1),
          int2(int(Width) - 1, int(Height) - 1));
      float2 fraction = bounded - float2(top_left);
@@ -497,7 +491,6 @@ index ec9c3df..28e9776 100644
  
  // The ratio the flow input was packed at, relative to the source image.
 diff --git a/src/d3d12/smooth_cursor.hlsl b/src/d3d12/smooth_cursor.hlsl
-index ddd6bad..51c1db1 100644
 --- a/src/d3d12/smooth_cursor.hlsl
 +++ b/src/d3d12/smooth_cursor.hlsl
 @@ -23,7 +23,7 @@
@@ -749,7 +742,6 @@ index ddd6bad..51c1db1 100644
 +    }
 +}
 diff --git a/src/d3d12/smooth_cursor_templates.cpp b/src/d3d12/smooth_cursor_templates.cpp
-index f15ae66..2b65466 100644
 --- a/src/d3d12/smooth_cursor_templates.cpp
 +++ b/src/d3d12/smooth_cursor_templates.cpp
 @@ -8,10 +8,12 @@
@@ -770,10 +762,9 @@ index f15ae66..2b65466 100644
  [[nodiscard]] std::uint32_t read_u32(std::span<const std::uint8_t> bytes, std::size_t at) noexcept {
      return static_cast<std::uint32_t>(bytes[at]) |
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
-index 262621e..1779b4a 100644
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -112,6 +112,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -124,6 +124,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "scene_change";
      case BridgeFlightOperation::smooth_cursor: // DCS VR Control (0010)
          return "smooth_cursor";
@@ -782,8 +773,8 @@ index 262621e..1779b4a 100644
      case BridgeFlightOperation::synthesis_frame_start_wait:
          return "synthesis_frame_start_wait";
      case BridgeFlightOperation::embedded_configuration: return "embedded_configuration";
-@@ -435,6 +437,28 @@ std::filesystem::path BridgeFlightLogger::log_path() const {
-     return impl_ ? impl_->path : std::filesystem::path{};
+@@ -720,6 +722,28 @@ std::filesystem::path BridgeFlightLogger::log_path() const {
+     return impl_->path;
  }
  
 +namespace {
@@ -811,7 +802,7 @@ index 262621e..1779b4a 100644
  BridgeFlightToken BridgeFlightLogger::begin(
      BridgeFlightOperation operation,
      std::uint64_t a,
-@@ -450,8 +474,10 @@ BridgeFlightToken BridgeFlightLogger::begin(
+@@ -735,8 +759,10 @@ BridgeFlightToken BridgeFlightLogger::begin(
      const BridgeFlightToken token{
          impl_->next_sequence.fetch_add(1, std::memory_order_relaxed),
          now.QuadPart};
@@ -824,7 +815,7 @@ index 262621e..1779b4a 100644
      return token;
  }
  
-@@ -475,6 +501,9 @@ void BridgeFlightLogger::end(
+@@ -762,6 +788,9 @@ void BridgeFlightLogger::end(
                (now.QuadPart - token.start_counter) * 1000000ll /
                impl_->frequency.QuadPart)
          : 0;
@@ -835,10 +826,9 @@ index 262621e..1779b4a 100644
          token.sequence, now.QuadPart, 'E', operation, result, duration, a, b, c);
  }
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
-index 028c92c..1638f40 100644
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -1696,6 +1696,8 @@ struct SessionState {
+@@ -1783,6 +1783,8 @@ struct SessionState {
      xrfg::latency::TripleDepth triple_depth;
      // `[ofxr] diag_vram`. Fixed for the session.
      bool diag_vram{};
@@ -847,7 +837,7 @@ index 028c92c..1638f40 100644
      // When the application's thread last entered xrBeginFrame, for the
      // blocked-interval attribution (sample_application_throughput).
      std::atomic<std::int64_t> application_begin_entered_ns{0};
-@@ -3022,6 +3024,11 @@ void configure_smooth_cursor(
+@@ -3429,6 +3431,11 @@ void configure_smooth_cursor(
              source = session.cursor_templates->source;
          }
          options.enabled = !options.templates.empty();
@@ -859,7 +849,7 @@ index 028c92c..1638f40 100644
          const HRESULT result = synthesizer.set_smooth_cursor(options);
          xrfg::bridge_flight_logger().event(
              xrfg::BridgeFlightOperation::smooth_cursor,
-@@ -13959,6 +13966,43 @@ void ensure_gpu_stats(SessionState& state) noexcept {
+@@ -15458,6 +15465,43 @@ void ensure_gpu_stats(SessionState& state) noexcept {
      }
  }
  
@@ -903,16 +893,15 @@ index 028c92c..1638f40 100644
  // DCS VR Control (0004): one application frame's throughput evidence, taken
  // as its xrEndFrame is entered: the CPU time since the previous one less what
  // this thread spent blocked in the layer (ApplicationBlockedScope), and the
-@@ -14213,6 +14257,7 @@ XrResult layer_end_frame_impl(
-     apply_scene_change(state); // DCS VR Control (0009)
+@@ -15711,6 +15755,7 @@ XrResult layer_end_frame_impl(
      apply_live_frame_multiplier(state, use_continuous_presenter);
-     apply_embedded_control(state);
+     log_video_memory_periodically(*state);
+     apply_embedded_control(state, use_continuous_presenter);
 +    log_vram_status(*state); // DCS VR Control (0011)
      const bool manually_disarmed = state->manual_control.stop_requested();
      if (manually_disarmed && !state->manual_stop_applied) {
          // The existing queue has been drained before taking the content lock.
 diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
-index ddfb55b..1cb3571 100644
 --- a/tests/bridge_flight_logger_tests.cpp
 +++ b/tests/bridge_flight_logger_tests.cpp
 @@ -230,6 +230,25 @@ int main(int argc, char** argv) {
@@ -961,7 +950,6 @@ index ddfb55b..1cb3571 100644
          std::cout << "Bridge flight logger tests passed.\n";
          return 0;
 diff --git a/tests/d3d12_history_tests.cpp b/tests/d3d12_history_tests.cpp
-index d9e18fa..1420997 100644
 --- a/tests/d3d12_history_tests.cpp
 +++ b/tests/d3d12_history_tests.cpp
 @@ -3,6 +3,7 @@
@@ -972,7 +960,7 @@ index d9e18fa..1420997 100644
  #include "xrfg/d3d12_frame_synthesizer.hpp"
  #include "xrfg/smooth_cursor_templates.hpp"
  
-@@ -4348,6 +4349,19 @@ using CursorPosition = std::array<int, 2>;
+@@ -4462,6 +4463,19 @@ using CursorPosition = std::array<int, 2>;
      return marker;
  }
  
@@ -992,7 +980,7 @@ index d9e18fa..1420997 100644
  // A cursor image as drawn: the template resized by nearest texel, the way
  // the detection and the composition map pixels to texels.
  struct Sprite {
-@@ -4402,6 +4416,37 @@ void draw_cursor(StereoPattern* pattern, UINT eye, CursorPosition at, const Spri
+@@ -4516,6 +4530,37 @@ void draw_cursor(StereoPattern* pattern, UINT eye, CursorPosition at, const Spri
      draw_cursor_sized(pattern, eye, kCursorWidth, kCursorHeight, at, sprite);
  }
  
@@ -1030,7 +1018,7 @@ index d9e18fa..1420997 100644
  void draw_cursor_into(StereoPattern* pattern, UINT width, UINT height, CursorPosition at,
      const Sprite& sprite) {
      for (UINT eye = 0; eye < kEyeCount; ++eye) {
-@@ -4426,6 +4471,10 @@ struct CursorScenario {
+@@ -4540,6 +4585,10 @@ struct CursorScenario {
      bool marker{false};
      // How large DCS draws it against the 32x32 image.
      float scale{1.0F};
@@ -1041,7 +1029,7 @@ index d9e18fa..1420997 100644
      // Head yaw between the two frames (radians): the scene turns past the
      // view-locked cursor and the previous frame is warped into the current
      // camera.
-@@ -4449,8 +4498,15 @@ struct CursorRun {
+@@ -4563,8 +4612,15 @@ struct CursorRun {
      xrfg::D3D12OpticalFlowBackend backend,
      xrfg::D3D12NvidiaOpticalFlowOptions nvidia_options,
      const CursorScenario& scenario) {
@@ -1059,7 +1047,7 @@ index d9e18fa..1420997 100644
      CursorRun run;
      const ReprojectionViews previous_views = make_reprojection_views();
      const ReprojectionViews current_views = make_reprojection_views(scenario.yaw);
-@@ -4466,12 +4522,12 @@ struct CursorRun {
+@@ -4580,12 +4636,12 @@ struct CursorRun {
          const CursorPosition to{from[0] + scenario.motion[0], from[1] + scenario.motion[1]};
          if (scenario.distractor) {
              const CursorPosition still{from[0] + (*scenario.distractor)[0], from[1] + (*scenario.distractor)[1]};
@@ -1076,7 +1064,7 @@ index d9e18fa..1420997 100644
          }
      }
      std::array<ComPtr<ID3D12Resource>, 2> sources{
-@@ -4506,6 +4562,10 @@ struct CursorRun {
+@@ -4620,6 +4676,10 @@ struct CursorRun {
          options.enabled = true;
          options.templates.push_back(xrfg::built_in_arrow_template());
          options.templates.push_back(marker_template());
@@ -1087,7 +1075,7 @@ index d9e18fa..1420997 100644
          require(synthesizer.set_smooth_cursor(options) == S_OK, "cursor: set_smooth_cursor");
      }
      synthesizer.note_cursor_position(1200, 700, 100'000);
-@@ -4550,9 +4610,10 @@ struct CursorRun {
+@@ -4664,9 +4724,10 @@ struct CursorRun {
  }
  
  struct CursorMeasure {
@@ -1101,7 +1089,7 @@ index d9e18fa..1420997 100644
      std::size_t cursor_mismatches{};
      CursorPosition best_offset{};
      // Pixels near either real frame's position (but away from the expected
-@@ -4566,8 +4627,8 @@ struct CursorMeasure {
+@@ -4680,8 +4741,8 @@ struct CursorMeasure {
  };
  
  [[nodiscard]] CursorMeasure measure_cursor(
@@ -1112,7 +1100,7 @@ index d9e18fa..1420997 100644
      const int kSize = sprite.size;
      const auto pixel = [&](const StereoPattern& pattern, int x, int y, UINT channel) {
          return static_cast<int>(pattern[eye][(static_cast<std::size_t>(y) * kCursorWidth +
-@@ -4601,7 +4662,7 @@ struct CursorMeasure {
+@@ -4715,7 +4776,7 @@ struct CursorMeasure {
                      const int y = expected[1] + oy + ty;
                      for (UINT channel = 0; channel < 3U; ++channel) {
                          if (std::abs(pixel(output, x, y, channel) -
@@ -1121,7 +1109,7 @@ index d9e18fa..1420997 100644
                              ++mismatches;
                              break;
                          }
-@@ -4653,17 +4714,25 @@ void test_smooth_cursor(
+@@ -4767,17 +4828,25 @@ void test_smooth_cursor(
      xrfg::D3D12OpticalFlowBackend backend = xrfg::D3D12OpticalFlowBackend::fidelity_fx,
      xrfg::D3D12NvidiaOpticalFlowOptions nvidia_options = {}) {
      const char* label = backend == xrfg::D3D12OpticalFlowBackend::nvidia ? "NVIDIA" : "FidelityFX";
@@ -1153,7 +1141,7 @@ index d9e18fa..1420997 100644
          CursorScenario off = on;
          off.feature = false;
          const CursorRun with = run_cursor_scenario(fixture, backend, nvidia_options, on);
-@@ -4679,7 +4748,8 @@ void test_smooth_cursor(
+@@ -4793,7 +4862,8 @@ void test_smooth_cursor(
                  std::to_string(with.stats.low_score) + ", margin " +
                  std::to_string(with.stats.ambiguous) + ", stereo " +
                  std::to_string(with.stats.stereo) + ", jump " + std::to_string(with.stats.jump) +
@@ -1163,7 +1151,7 @@ index d9e18fa..1420997 100644
          for (UINT output = 0; output < (triple ? 2U : 1U); ++output) {
              const float t = with.fractions[output];
              for (UINT eye = 0; eye < kEyeCount; ++eye) {
-@@ -4688,12 +4758,13 @@ void test_smooth_cursor(
+@@ -4802,12 +4872,13 @@ void test_smooth_cursor(
                  const CursorPosition expected{
                      to[0] + static_cast<int>(std::lround((from[0] - to[0]) * (1.0F - t))),
                      to[1] + static_cast<int>(std::lround((from[1] - to[1]) * (1.0F - t)))};
@@ -1181,7 +1169,7 @@ index d9e18fa..1420997 100644
                            << (on.scale != 1.0F ? " scale=" + std::to_string(on.scale) : std::string())
                            << " t=" << t
                            << " eye=" << eye << ": on mismatches=" << good.cursor_mismatches
-@@ -4712,6 +4783,53 @@ void test_smooth_cursor(
+@@ -4826,6 +4897,53 @@ void test_smooth_cursor(
          }
      }
  

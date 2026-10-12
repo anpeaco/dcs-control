@@ -1,5 +1,4 @@
 diff --git a/include/xrfg/latency_control.hpp b/include/xrfg/latency_control.hpp
-index 4cfd3da..20da322 100644
 --- a/include/xrfg/latency_control.hpp
 +++ b/include/xrfg/latency_control.hpp
 @@ -210,11 +210,28 @@ Nanoseconds rebase_display_time_correction(
@@ -79,7 +78,6 @@ index 4cfd3da..20da322 100644
      std::size_t late_count_{};
      std::size_t late_next_{};
 diff --git a/src/core/latency_control.cpp b/src/core/latency_control.cpp
-index 3c81a2b..6e4b5d0 100644
 --- a/src/core/latency_control.cpp
 +++ b/src/core/latency_control.cpp
 @@ -261,6 +261,10 @@ void AdaptiveFrameGenController::add_frame(
@@ -144,7 +142,6 @@ index 3c81a2b..6e4b5d0 100644
          decision.reason = AdaptiveReason::late;
      } else if (decision.stats.samples >= config_.min_samples_up &&
 diff --git a/tests/latency_control_tests.cpp b/tests/latency_control_tests.cpp
-index 6406bcb..c88ca11 100644
 --- a/tests/latency_control_tests.cpp
 +++ b/tests/latency_control_tests.cpp
 @@ -610,6 +610,100 @@ void adaptive_tests() {

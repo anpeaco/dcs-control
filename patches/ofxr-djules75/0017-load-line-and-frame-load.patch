@@ -1,7 +1,7 @@
 diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
 --- a/include/xrfg/bridge_flight_logger.hpp
 +++ b/include/xrfg/bridge_flight_logger.hpp
-@@ -304,6 +304,17 @@ enum class BridgeFlightOperation : std::uint32_t {
+@@ -363,6 +363,17 @@ enum class BridgeFlightOperation : std::uint32_t {
      // (32-63), 0 where not known; c= 1 while the application owns the
      // foreground window (Windows budgets a background process lower).
      vram_status,
@@ -167,7 +167,7 @@ diff --git a/src/core/diagnostic_overlay_model.cpp b/src/core/diagnostic_overlay
 diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
 --- a/src/layer/bridge_flight_logger.cpp
 +++ b/src/layer/bridge_flight_logger.cpp
-@@ -114,6 +114,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
+@@ -126,6 +126,8 @@ constexpr std::uint64_t kMegabyte = 1024ull * 1024ull;
          return "smooth_cursor";
      case BridgeFlightOperation::vram_status: // DCS VR Control (0011)
          return "vram_status";
@@ -179,7 +179,7 @@ diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger
 diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
 --- a/src/layer/openxr_fps_overlay.cpp
 +++ b/src/layer/openxr_fps_overlay.cpp
-@@ -109,6 +109,8 @@ struct OpenXrFpsOverlay::Impl {
+@@ -112,6 +112,8 @@ struct OpenXrFpsOverlay::Impl {
      // DCS VR Control (0007).
      VramStatus vram;
      bool show_vram{};
@@ -188,7 +188,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
      OverlayPlacement panel_placement{};
      HANDLE status_mapping{};
      const DcsVrStatusV1* status_view{};
-@@ -490,6 +492,7 @@ struct OpenXrFpsOverlay::Impl {
+@@ -498,6 +500,7 @@ struct OpenXrFpsOverlay::Impl {
              inputs.hotkey = hotkey;
              inputs.show_vram = show_vram;
              inputs.vram = vram;
@@ -196,7 +196,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
              read_status(inputs);
              read_engine(inputs);
              read_pupil(inputs);
-@@ -529,6 +532,10 @@ void OpenXrFpsOverlay::set_vram_status(const VramStatus& status, bool show) noex
+@@ -537,6 +540,10 @@ void OpenXrFpsOverlay::set_vram_status(const VramStatus& status, bool show) noex
      impl_->vram = status;
      impl_->show_vram = show;
  }
@@ -210,7 +210,7 @@ diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
 diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
 --- a/src/layer/openxr_layer.cpp
 +++ b/src/layer/openxr_layer.cpp
-@@ -1710,6 +1710,14 @@ struct SessionState {
+@@ -1797,6 +1797,14 @@ struct SessionState {
      // Application frames ended, read by the GPU statistics sampler.
      std::atomic<std::uint64_t> application_frames_ended{0};
      bool gpu_stats_tried{}; // the xrEndFrame thread
@@ -225,7 +225,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
      // The skip itself (see xrfg::latency::LateFrameSkipController): while it
      // is on, the application's xrEndFrame makes one synthetic per frame, at
      // the second synthetic's instant, and the presenter re-presents the
-@@ -5971,6 +5979,8 @@ XrResult layer_wait_frame_impl(
+@@ -6665,6 +6673,8 @@ XrResult layer_wait_frame_impl(
              frame_state->predictedDisplayTime,
              frame_state->predictedDisplayPeriod,
          });
@@ -234,7 +234,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
          constexpr std::size_t kMaximumPendingFrameRecords = 32;
          while (state->pending_frames.size() > kMaximumPendingFrameRecords) {
              state->pending_frames.pop_front();
-@@ -14002,9 +14012,10 @@ void create_application_gpu_timer(SessionState& state) noexcept {
+@@ -15501,9 +15511,10 @@ void create_application_gpu_timer(SessionState& state) noexcept {
  // DCS VR Control (0007): the GPU statistics sampler (busy time for adaptive
  // 2X/3X, memory for `[ofxr] diag_vram`), made on the xrEndFrame thread the
  // first time either is wanted, on the adapter the session renders on.
@@ -247,7 +247,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
          return;
      }
      state.gpu_stats_tried = true;
-@@ -14093,6 +14104,61 @@ void log_vram_status(SessionState& state) noexcept {
+@@ -15592,6 +15603,61 @@ void log_vram_status(SessionState& state) noexcept {
  //        application frame (xrfg::GpuStatsSampler), which leaves out the
  //        idle the bracket above cannot see; the bracket where no fresh
  //        reading exists.
@@ -309,7 +309,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
  void sample_application_throughput(
      SessionState& state, std::chrono::steady_clock::time_point entered) noexcept {
      auto& throughput = state.throughput;
-@@ -14102,6 +14168,7 @@ void sample_application_throughput(
+@@ -15601,6 +15667,7 @@ void sample_application_throughput(
      const std::int64_t blocked = std::exchange(t_application_blocked_ns, 0);
      state.application_frames_ended.fetch_add(1, std::memory_order_relaxed);
      ensure_gpu_stats(state);
@@ -317,7 +317,7 @@ diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
      if (!state.adaptive_active.load()) {
          throughput.last_entry = {};
          return;
-@@ -14362,6 +14429,7 @@ XrResult layer_end_frame_impl(
+@@ -15861,6 +15928,7 @@ XrResult layer_end_frame_impl(
              state->fps_overlay->set_vram_status(
                  state->gpu_stats->snapshot().vram, true);
          }

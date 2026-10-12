@@ -158,6 +158,13 @@ public sealed record VrProfile
     /// <summary>lazy_runtime_swapchains (patch 0008): the runtime's images for DCS's swapchains are made only when DCS submits
     /// one, which saves video memory for swapchains DCS never shows.</summary>
     public bool OfxrLazySwapchains { get; init; } = true;
+    /// <summary>single_swapchain_rings (OFXR 0.2.10): one private swapchain per generated output, written through staging
+    /// textures, instead of two. Fewer images held by the headset runtime; with 3× it saves little (fork patch 0018 gives
+    /// 3× the staging it needs).</summary>
+    public bool OfxrSingleRings { get; init; } = true;
+    /// <summary>capture_at_end_frame (OFXR 0.2.12): OFXR takes its copy of DCS's eye images at xrEndFrame rather than when
+    /// DCS releases them, so an eye drawn to after its release is not a frame old in that eye alone.</summary>
+    public bool OfxrCaptureAtEndFrame { get; init; } = true;
     public FpsLimitMode FpsLimit { get; init; }
     public double HeadsetRefreshHz { get; init; } = 90;
     /// <summary>The refresh rate is read from the headset software (<see cref="HeadsetRefresh"/>) whenever it can be;
