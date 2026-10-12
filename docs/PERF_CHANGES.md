@@ -37,8 +37,8 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 (d93c5e2) | Framegen → Advanced → **Headset queue at high priority** | Not flown |
 | S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 (d93c5e2) | none | Not flown |
 | S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` (d93c5e2) | none (correctness) | Tested offline |
-| S14 | One render-thread wait budget per frame for the engine module (R5), with every render-thread wait counted | engine module, `render_wait.h` | Engine Optimizations → Advanced → **Render-thread wait budget** (0 = off) | Built, not installed |
-| S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Built, not installed |
+| S14 | One render-thread wait budget per frame for the engine module (R5), with every render-thread wait counted | engine module, `render_wait.h` (aed1158) | Engine Optimizations → Advanced → **Render-thread wait budget** (0 = off) | Built, not installed |
+| S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app (aed1158) | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Built, not installed |
 | M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Checked on the baseline log |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
