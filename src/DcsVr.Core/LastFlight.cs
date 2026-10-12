@@ -342,6 +342,9 @@ public static partial class LastFlight
         private readonly List<(double Ms, ulong DisplayNs)> _submissions = [];
         private readonly Dictionary<ulong, (double Ms, bool Generated)> _probeMarks = [];
         private readonly List<(double Ms, double LagMs, bool Generated)> _queueLags = [];
+        // session_state: when the headset session's state changed (ms, FOCUSED or not). Out of focus (the headset's or
+        // the runtime's menu, the headset taken off) DCS keeps sending frames, but there is nothing to generate from.
+        private readonly List<(double Ms, bool Focused)> _focus = [];
         /// <summary>DCS frames in a second for it to count as flying (loading screens and menus run far slower).</summary>
         private const int FlyingFps = 10;
 
@@ -390,6 +393,9 @@ public static partial class LastFlight
                         else if (probe is "914" && _probeMarks.Remove(value, out var mark) && probeMs >= mark.Ms)
                             _queueLags.Add((mark.Ms, probeMs - mark.Ms, mark.Generated));
                     }
+                    return;
+                case "session_state":
+                    if (Field(line, " result=", out var state) && Real(line, " ms=") is { } stateMs) _focus.Add((stateMs, state is "5"));
                     return;
                 case "display_time_correction":
                     if (Real(line, " ms=") is { } stepMs) _displaySteps.Add(stepMs);
@@ -477,15 +483,32 @@ public static partial class LastFlight
             return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To, hitches, delivery);
         }
 
-        /// <summary>Per second: at 90% or more of <paramref name="targetFps"/>, and so were the 2 seconds either side.</summary>
+        /// <summary>Per second: at 90% or more of <paramref name="targetFps"/> with the session focused throughout, and so
+        /// were the 2 seconds either side.</summary>
         private bool[]? Steady(double targetFps)
         {
             if (targetFps <= 0 || _appPerSecond.Count == 0) return null;
             var threshold = 0.9 * targetFps;
-            bool Ok(int s) => s >= 0 && s < _appPerSecond.Count && _appPerSecond[s] >= threshold;
+            bool Ok(int s) => s >= 0 && s < _appPerSecond.Count && _appPerSecond[s] >= threshold && Focused(s);
             var steady = new bool[_appPerSecond.Count];
             for (var s = 0; s < steady.Length; s++) steady[s] = Ok(s - 2) && Ok(s - 1) && Ok(s) && Ok(s + 1) && Ok(s + 2);
             return steady;
+        }
+
+        /// <summary>Whether the session was FOCUSED for all of <paramref name="second"/>; always, for a log without
+        /// session states (an OFXR before 0.2.13).</summary>
+        private bool Focused(int second)
+        {
+            if (_focus.Count == 0) return true;
+            double from = second * 1000.0, to = from + 1000;
+            var focused = false;
+            foreach (var (ms, isFocused) in _focus)
+            {
+                if (ms >= to) break;
+                if (ms <= from) focused = isFocused;
+                else if (!isFocused) return false;
+            }
+            return focused;
         }
 
         private FrameDelivery Delivery(int seconds, Func<double, bool> steady, double slotMs)

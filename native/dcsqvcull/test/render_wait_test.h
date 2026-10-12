@@ -31,6 +31,18 @@ void Run() {
   rtwait::Allow(0);  // closes the previous frame into the statistics
   Check(rtwait::g_frames.load() == 2 && rtwait::g_exhaustedFrames.load() == 1 && rtwait::g_maxUs.load() >= 1050,
         "render wait: frames with a wait, frames that spent the budget and the longest are counted");
+  // A cap above what is left (the shadow plan's 2 ms): the frame spent the budget only if the wait ran to the
+  // budget's limit. Counting every such wait put each shadow-plan wait in the count (12 Oct flight).
+  rtwait::ResetCounters();
+  rtwait::g_frameGen.fetch_add(1);
+  rtwait::Allow(2000.0);
+  rtwait::Charge(rtwait::kShadowPlan, 50.0);
+  rtwait::g_frameGen.fetch_add(1);
+  rtwait::Charge(rtwait::kShadowPlan, rtwait::Allow(2000.0));
+  rtwait::g_frameGen.fetch_add(1);
+  rtwait::Allow(0);
+  Check(rtwait::g_frames.load() == 2 && rtwait::g_exhaustedFrames.load() == 1,
+        "render wait: a wait the budget cut short counts as spent only when it ran to the budget's limit");
   // Budget 0: every wait keeps its own cap.
   rtwait::g_budgetUs = 0;
   rtwait::Charge(rtwait::kGbRedo, 50000.0);

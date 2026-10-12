@@ -679,6 +679,15 @@ Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, wha
     Require(LastFlight.ParseOfxr(hitchLines)!.Hitches is { Seconds: 56, RuntimeImagesMade: 1, RuntimeImagesGivenBack: 1, InPlaceWaits: 2, ContinuityResets: 1, UnwrittenHandovers: 1 },
         "hitch signals over the steady seconds");
     Require(spare.Hitches is { RuntimeImagesMade: 0, RuntimeImagesGivenBack: 0, InPlaceWaits: 0, ContinuityResets: 0, UnwrittenHandovers: 0 }, "none logged");
+    // Out of focus 40.5-48.2 s (a headset menu: DCS keeps its rate, every frame restarts generation): seconds 38-50 are
+    // not steady, and neither are the resets in them.
+    var menuLines = new List<string>(hitchLines) {
+        "seq=9 ms=9000.000 tid=1 phase=I op=session_state result=5 dur_us=0 a=1 b=0 c=0",
+        "seq=9 ms=40500.000 tid=1 phase=I op=session_state result=4 dur_us=0 a=1 b=0 c=0",
+        "seq=9 ms=48200.000 tid=1 phase=I op=session_state result=5 dur_us=0 a=1 b=0 c=0" };
+    for (var ms = 40600; ms < 48200; ms += 100) menuLines.Add($"seq=9 ms={ms}.000 tid=1 phase=I op=continuity_reset result=0 dur_us=0 a=1 b=0 c=0");
+    Require(LastFlight.ParseOfxr(menuLines)!.Hitches is { Seconds: 43, RuntimeImagesMade: 1, InPlaceWaits: 2, ContinuityResets: 0 },
+        "seconds out of focus, and the 2 either side, are not steady");
     // The engine switch at 45 s: CPU 20 ms with the optimizations on, 15 ms off.
     var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
     var switched = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:00:45.000 hotkey: engine optimizations OFF"], ofxrStart, ofxrStart);

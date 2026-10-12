@@ -39,6 +39,7 @@ uint64_t g_seenGen = 0;
 double g_spentUs = 0;
 bool g_exhausted = false;
 bool g_waited = false;  // this frame has a wait to record
+double g_limitUs = -1;  // the last Allow's limit when the budget cut it below the wait's own cap, else -1
 
 // Per-frame totals: 50 us buckets up to 5 ms, then one for longer.
 constexpr int kBucketUs = 50;
@@ -75,12 +76,13 @@ inline double Allow(double capUs) {
   const uint32_t budget = g_budgetUs.load(std::memory_order_relaxed);
   if (!budget) return capUs;
   const double left = static_cast<double>(budget) - g_spentUs;
+  g_limitUs = -1;
   if (left <= 0) {
     g_exhausted = true;
     return 0;
   }
-  if (left < capUs) {
-    g_exhausted = g_exhausted || capUs - left > 0.5;  // the budget, not the cap, decides this wait
+  if (left < capUs && capUs - left > 0.5) {
+    g_limitUs = left;  // the budget, not the cap, decides this wait: spent if it runs to the end (Charge)
     return left;
   }
   return capUs;
@@ -90,6 +92,8 @@ inline double Allow(double capUs) {
 inline void Charge(Site site, double us) {
   Sync();
   if (us < 0) us = 0;
+  if (g_limitUs >= 0 && us >= g_limitUs) g_exhausted = true;
+  g_limitUs = -1;
   g_spentUs += us;
   g_waited = true;
   g_siteUs[site].fetch_add(static_cast<uint64_t>(us), std::memory_order_relaxed);

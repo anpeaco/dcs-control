@@ -2,7 +2,7 @@
 
 Every change made to remove a cause of delay or stutter, with what to look at after a flight to see whether it worked, and how to switch it back if performance gets worse. One change per row; the **Status** column is updated after each test flight. Keep the order of the A/B flights below: one change per flight, same mission, same route, Virtual Desktop's performance overlay on.
 
-All of these are in release 0.5.6 preview as built on 12 October 2026 (OFXR layer with fork patches 0001-0022). Status values: **Not flown** (built and tested offline only), **Confirmed** (a flight showed the expected effect), **No effect** (flown, nothing measurable), **Regressed** (flown, worse: switched back, see the entry).
+All of these are in release 0.5.6 preview as built on 12 October 2026 (OFXR layer with fork patches 0001-0022). Status values: **Not flown** (built and tested offline only), **In flight** (installed and flown, but not isolated by an A/B), **Confirmed** (a flight showed the expected effect), **No effect** (flown, nothing measurable), **Regressed** (flown, worse: switched back, see the entry).
 
 ## Baseline
 
@@ -23,23 +23,24 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 
 | ID | Change | Where (commit) | Switch to undo it | Status |
 | --- | --- | --- | --- | --- |
-| S1 | Overlay no longer holds its lock across the runtime's xrEndFrame | OFXR fork patch 0019 (8e10a49) | none (locking only) | Not flown |
-| S2 | Headset swapchains kept once made | OFXR fork patch 0020 (8e10a49) | Framegen → Advanced → **Keep headset images once made** | Not flown |
-| S3 | OFXR flight log written by a background thread | OFXR fork patch 0021 (8e10a49) | none; `flush_each_event=1` makes it synchronous again | Not flown |
-| S4 | Spare image for in-place reading, and a count of the waits | OFXR fork patch 0022 (8e10a49) | Framegen → Advanced → **Spare image for in-place reading** | Not flown |
-| S5 | Terrain prefetch fix yields instead of sleeping | engine module, `prefetch_fix.h` (b72e738) | Engine Optimizations → Terrain prefetch fix → Observe (compares with no skipping) | Not flown |
-| S6 | Shadow-plan wait on DCS's render thread capped at 2 ms (was 20 ms) | engine module, `shadow_batch.h` (b72e738) | none | Not flown |
-| S7 | CPU Boost leaves affinity alone on a single-CCD CPU | `CpuTopology.cs` (8e10a49) | turn CPU Boost off to compare | Not flown |
-| S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` (8e10a49) | CPU Boost → **Record CPU and GPU use** off to compare | Not flown |
-| S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft, not in git) | Framegen → Advanced → **Late frame skip** | Not flown |
-| M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card (8e10a49) | measurement only | Not flown |
-| S10 | Synthesis waits on the GPU for the hand-over copy of a staging texture before writing it again (R7) | OFXR fork patch 0023 (d93c5e2) | none (ordering fix) | Not flown |
-| S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 (d93c5e2) | Framegen → Advanced → **Headset queue at high priority** | Not flown |
-| S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 (d93c5e2) | none | Not flown |
-| S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` (d93c5e2) | none (correctness) | Tested offline |
-| S14 | One render-thread wait budget per frame for the engine module (R5), with every render-thread wait counted | engine module, `render_wait.h` (aed1158) | Engine Optimizations → Advanced → **Render-thread wait budget** (0 = off) | Built, not installed |
-| S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app (aed1158) | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Built, not installed |
-| M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Checked on the baseline log |
+| S1 | Overlay no longer holds its lock across the runtime's xrEndFrame | OFXR fork patch 0019 (8e10a49) | none (locking only) | In flight |
+| S2 | Headset swapchains kept once made | OFXR fork patch 0020 (8e10a49) | Framegen → Advanced → **Keep headset images once made** | Confirmed (12 Oct 13:37) |
+| S3 | OFXR flight log written by a background thread | OFXR fork patch 0021 (8e10a49) | none; `flush_each_event=1` makes it synchronous again | In flight |
+| S4 | Spare image for in-place reading, and a count of the waits | OFXR fork patch 0022 (8e10a49) | Framegen → Advanced → **Spare image for in-place reading** | In flight: 0 waits |
+| S5 | Terrain prefetch fix yields instead of sleeping | engine module, `prefetch_fix.h` (b72e738) | Engine Optimizations → Terrain prefetch fix → Observe (compares with no skipping) | In flight |
+| S6 | Shadow-plan wait on DCS's render thread capped at 2 ms (was 20 ms) | engine module, `shadow_batch.h` (b72e738) | none | In flight (within S14's budget) |
+| S7 | CPU Boost leaves affinity alone on a single-CCD CPU | `CpuTopology.cs` (8e10a49) | turn CPU Boost off to compare | Confirmed (12 Oct 13:37) |
+| S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` (8e10a49) | CPU Boost → **Record CPU and GPU use** off to compare | In flight |
+| S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft, not in git) | Framegen → Advanced → **Late frame skip** | Not tested (only acts in 3×) |
+| M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card (8e10a49) | measurement only | Working |
+| S10 | Synthesis waits on the GPU for the hand-over copy of a staging texture before writing it again (R7) | OFXR fork patch 0023 (d93c5e2) | none (ordering fix) | In flight: 2 waits, both outside steady flight |
+| S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 (d93c5e2) | Framegen → Advanced → **Headset queue at high priority** | Confirmed, partly (12 Oct 13:37) |
+| S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 (d93c5e2) | none | In flight |
+| S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` (d93c5e2) | none (correctness) | Confirmed (the 13:37 flight ran the new OFXR: 406 records exist only with 0025) |
+| S14 | One render-thread wait budget per frame for the engine module (R5), with every render-thread wait counted | engine module, `render_wait.h` (aed1158) | Engine Optimizations → Advanced → **Render-thread wait budget** (0 = off) | In flight: render-thread waits max 0.40 ms per frame |
+| S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app (aed1158) | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Installed, off: not flown |
+| M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Working; see M3 |
+| M3 | Steady seconds leave out time the headset session was not FOCUSED (a headset or Virtual Desktop menu); S14's "frames spent the budget" counts only waits that ran to the budget's limit | `LastFlight.cs`, engine module `render_wait.h` (uncommitted) | measurement only | Checked on the 13:37 log |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
@@ -157,6 +158,33 @@ Counts over the flying seconds: headset images made (result 9) and given back (1
 - **Check**: Late frames/min and Limited by (CPU ms p90) with it on and off; `DcsQvCull.log` recorder "late" counts and the render-thread wait line.
 - **Not changed yet**: the workers' own spin waits (up to 20 ms, with SwitchToThread) and the ~100 kernel calls per frame at arming (review R6/R5 follow-ups).
 
+## Flight 12 October 2026 13:37 (first flight of the new build)
+
+Same profile as the baseline, all changes above installed except S15 (off) and S9 (2× flight). Golan Valley of Tears v5, F-15E air start, about 5 minutes. **Not an A/B**: one run, a different route and a busier mission phase than the baseline, everything changed at once. It shows which changes do what they should; it cannot show which change made the difference.
+
+| Figure (steady seconds) | Baseline 11 Oct | 12 Oct 13:37 |
+| --- | --- | --- |
+| Steady seconds | 254 | 158 (170 before M3) |
+| Late frames / min | 19.8 | **12.2** (21 one refresh late, 6 two, 5 three or more) |
+| Missed refreshes / min | 41.1 | **22.8** (121.8 before M3) |
+| Hand-over p99 / p99.9 | 21.3 / 25.4 ms | 23.5 / **40.1 ms** |
+| Hand-overs over 30 ms | 5 | **17** |
+| Headset queue after each generated frame, p50 / p90 | 15.0 / 16.6 ms | **9.6** / 16.8 ms |
+| ... later than one refresh | 62% | **22%** |
+| Generated frame still unwritten a refresh after hand-over (406) | not logged | 1,187 (7.5/s, about 1 in 5 generated frames) |
+| Headset images made / given back (whole flight) | 6 / 6 | 2 (the first two) / 0 |
+| In-place waits (15), staging waits (705) | 0 / not logged | 0 / 2 (outside steady flight) |
+| CPU Boost processes moved | 41 | 0 |
+
+What the log shows:
+
+- **Menu gap, not a stutter** (fixed in M3): from 96.2 s to 104.0 s the session was VISIBLE, not FOCUSED (dcs.log 12:39:10.5 to 12:39:18.3: a Quest or Virtual Desktop menu, or the headset lifted). DCS kept 36 FPS but sent no projection layer, so every frame restarted generation (278 `continuity_reset`, prepare reason 1 "empty mappings") and showed for two refreshes. Last flight counted those 7.7 s as steady flight: 278 restarts and about 285 of the 345 missed refreshes came from them.
+- **Hand-over tail is worse**: the long DCS xrEndFrame calls come in two bursts, 130-135 s (up to 150 ms) and 189-194 s (up to 109 ms), plus single ones. The engine module's render-thread waits stayed under 0.4 ms per frame throughout, and its shader compiles were finished by 13:39:52 (122 s), so neither explains them. Next: R9 (presenter lock across Virtual Desktop's calls) and what DCS was doing then (both are after the battle's H-hour).
+- **406 grows with the scene**: 0-5 per 20 s in the first 100 s, 63-203 per 20 s mid-flight, 333-359 per 20 s in the last minute (about half the generated frames). The headset then shows the older image (R11). This is the largest remaining visible effect after the late frames.
+- **S14's counter was wrong**: every shadow-plan wait was counted as "spent the 1.00 ms budget" (49 of 49, 62 of 62 …) because the plan wait's own 2 ms cap is above the budget; the waits themselves stayed under 0.4 ms. Fixed in M3; the budget's behaviour is unchanged.
+
+Next flights use **`Golan_Valley_of_Tears_v5_PERF_TEST.miz`** (made by `scripts/make-perf-mission.py`): the same F-15E, immortal with unlimited fuel, starting at 4000 m heading north over both kill boxes with the autopilot engaged by the mission (heading and altitude hold), and the helicopter dice fixed. Same throttle position every run; stay out of the headset menus while recording.
+
 ## A/B protocol (from R1)
 
 1. **Measure with M2**: Late frames/min and Missed refreshes/min are the primary figures; one per change as listed under Changes.
@@ -222,7 +250,7 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | R8 | 2× deep pipeline gets 4 synthetic staging textures (0018 meant only 3×): ~145 MB unused; the S4 spare likely unneeded (2 × 36 MB) | `openxr_layer.cpp:3776` | 4 only when 3× is possible; spare off by default after a flight shows no waits | Not changed: a 2× deep session can switch to 3× live (triple_switchable) and nothing is created at the switch, so the four textures are needed from the start; allocating them at the switch would save ~145 MB of 24 GB at real complexity. Spare image (S4): decide after a flight |
 | R9 | OFXR's presenter holds its content lock across Virtual Desktop's image wait and xrEndFrame; DCS's xrEndFrame needs it every frame (same pattern as S1) | `openxr_layer.cpp:10399-11663`, `16418` | Keep runtime calls outside the lock with single rings; log lock waits over 0.5 ms | Open |
 | R10 | Presenter thread at default priority; runtime-entry gate held across Virtual Desktop's xrWaitFrame although DCS's bridged session does not need it | `openxr_layer.cpp:12104`, `2133` | THREAD_PRIORITY_HIGHEST + MMCSS for the presenter; skip the gate with the D3D11 bridge | Open |
-| R11 | Generated frames handed over before drawn (402): no torn image (the copy waits on the GPU on the headset's queue), but an older image when generation finishes after Virtual Desktop's deadline; not logged in 2× | `openxr_layer.cpp:10597`, `10525` | Log "still unwritten a slot later" per second; then a bounded wait or the layer's repeat frame | Logged (406, patch 0025); hold or repeat to do |
+| R11 | Generated frames handed over before drawn (402): no torn image (the copy waits on the GPU on the headset's queue), but an older image when generation finishes after Virtual Desktop's deadline; not logged in 2× | `openxr_layer.cpp:10597`, `10525` | Log "still unwritten a slot later" per second; then a bounded wait or the layer's repeat frame | Logged (406, patch 0025): 7.5/s in the 13:37 flight, about half the generated frames in its last minute; hold or repeat to do |
 | R12 | Display-time correction steps DCS's predicted time by a whole period (13.9 ms pose jolt) | `latency_control.cpp:293` | Ramp over several frames | Open |
 | R13 | `before_write` queues a D3D11 GPU wait every frame even when the read finished long ago | `d3d11_bridge.cpp:983` | Skip when the fence has completed | Fixed (S12) |
 | R14 | Both eyes' synthesis run strictly one after the other (~3.0 ms per pair); PERFORMANCE.md's reason for not overlapping them (shared bridge queue) is wrong | baseline `synthesis_gpu_span` | Submit both packs and flows before both compositions | Open |
