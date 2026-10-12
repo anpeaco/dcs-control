@@ -132,6 +132,8 @@ public static class ProfileValidation
         if (profile.EngineOptimizations && !Enum.IsDefined(profile.BoostPrefetch)) Error("engine-prefetch", "Select a recognized terrain prefetch fix mode.");
         if (profile.EngineOptimizations && profile.EngineTimerRefreshUs is < VrProfile.EngineTimerRefreshMin or > VrProfile.EngineTimerRefreshMax)
             Error("engine-timer", $"Streaming timer refresh must be {VrProfile.EngineTimerRefreshMin}–{VrProfile.EngineTimerRefreshMax} µs.");
+        if (profile.EngineOptimizations && profile.EngineRenderWaitBudgetUs is < 0 or > VrProfile.EngineRenderWaitBudgetMax)
+            Error("engine-wait-budget", $"Render-thread wait budget must be 0–{VrProfile.EngineRenderWaitBudgetMax} µs.");
         if (profile.EngineOptimizations && profile.EngineDevMode)
         {
             void DevPath(string? path, string extension, string what)

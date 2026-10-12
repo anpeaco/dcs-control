@@ -1233,6 +1233,17 @@ Test("DCS engine optimizations install in Saved Games Scripts with every ini key
     var tuned = ConfigurationWriters.DcsQvCull(on with { EngineShaderTimeCache = false, EnginePartitionBoost = false, EngineTimerRefreshUs = 500, EngineDiagnosticHooks = true });
     Require(tuned.Contains("ShaderTimeCache=0") && tuned.Contains("PartitionBoost=0") && tuned.Contains("CacheUs=500") && tuned.Contains("Diagnostics=1"));
     Require(ProfileValidation.Validate(on with { EngineTimerRefreshUs = 100 }).Any(i => i.Code == "engine-timer") && !ProfileValidation.Validate(on).Any(i => i.Code == "engine-timer"));
+    // R5/R6: the render-thread wait budget (1 ms by default, 0 = off) and the lighter recorder threads (off by default).
+    foreach (var line in new[] { "RenderWaitBudgetUs=1000", "ShadowRecorderPriority=0", "ShadowRecorderBoostJobs=240", "GBufferRecorderHelpers=2", "GBufferRecorderPriority=0", "RecorderPriorityBoost=1" })
+        Require(ini.Contains(line), "DcsQvCull.ini lacks " + line);
+    var light = ConfigurationWriters.DcsQvCull(on with { EngineLightRecorders = true, EngineRenderWaitBudgetUs = 0 });
+    foreach (var line in new[] { "RenderWaitBudgetUs=0", "ShadowRecorderPriority=-1", "ShadowRecorderHelpers=1", "ShadowRecorderBoostJobs=0", "GBufferRecorderHelpers=1", "GBufferRecorderPriority=-1", "RecorderPriorityBoost=0" })
+        Require(light.Contains(line), "lighter recorders lack " + line);
+    Require(ProfileValidation.Validate(on with { EngineRenderWaitBudgetUs = 6000 }).Any(i => i.Code == "engine-wait-budget") && !ProfileValidation.Validate(on).Any(i => i.Code == "engine-wait-budget"));
+    // Every [Model] key written is one the module reads.
+    var moduleSource = File.ReadAllText(Path.Combine(workspace, "native/dcsqvcull/src/main.cpp"));
+    foreach (var key in new[] { "RenderWaitBudgetUs", "ShadowRecorderBoostJobs", "GBufferRecorderPriority", "RecorderPriorityBoost" })
+        Require(moduleSource.Contains("L\"" + key + "\"", StringComparison.Ordinal), key + " is read by the module");
     // The in-flight switch: Alt+Shift+F11 by default, Off writes 0:0; the module's own developer keys stay off.
     Require(ini.Contains("Toggle=122:6") && ini.Contains("DeveloperKeys=0") && ConfigurationWriters.DcsQvCull(on with { EngineToggleKey = "Off" }).Contains("Toggle=0:0"));
     Require(!ProfileValidation.Validate(on).Any(i => i.Code is "engine-hotkey" or "hotkey-conflict"));

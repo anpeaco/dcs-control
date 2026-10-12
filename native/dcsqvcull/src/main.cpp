@@ -242,6 +242,10 @@ struct Config {
   int shadowRecorderPriority = 0;       // [Model] ShadowRecorderPriority: worker THREAD_PRIORITY_* (-2..2)
   uint32_t shadowRecorderSplit = 0xf;   // [Model] ShadowRecorderSplit: cascades with helper workers (bits 0-3)
   int shadowRecorderHelpers = 3;        // [Model] ShadowRecorderHelpers: at most this many helpers per job (0-3)
+  int shadowRecorderBoostJobs = 240;    // [Model] ShadowRecorderBoostJobs: jobs with one more helper after a late one (R6)
+  int gbufferRecorderPriority = 0;      // [Model] GBufferRecorderPriority: worker THREAD_PRIORITY_* (-2..2) (R6)
+  bool recorderPriorityBoost = true;    // [Model] RecorderPriorityBoost: 0 disables the workers' dynamic boost (R6)
+  int renderWaitBudgetUs = 1000;        // [Model] RenderWaitBudgetUs: render-thread waits per frame (R5; 0 = off)
   bool shadowRecorderInstancing = true;  // [Model] ShadowRecorderInstancing
   bool suiteShadowRecVerify = false;    // [Suite] ShadowRecVerify
   int suiteShadowRecVerifySec = 5;      // [Suite] ShadowRecVerifySec
@@ -613,6 +617,16 @@ void LoadConfig(bool initial) {
   c.gbufferRecorderMaxSegments = GetPrivateProfileIntW(L"Model", L"GBufferRecorderMaxSegments", 12, ini.c_str());
   if (c.gbufferRecorderMaxSegments < 1) c.gbufferRecorderMaxSegments = 1;
   if (c.gbufferRecorderMaxSegments > 16) c.gbufferRecorderMaxSegments = 16;
+  c.shadowRecorderBoostJobs = static_cast<int>(GetPrivateProfileIntW(L"Model", L"ShadowRecorderBoostJobs", 240, ini.c_str()));
+  if (c.shadowRecorderBoostJobs < 0) c.shadowRecorderBoostJobs = 0;
+  if (c.shadowRecorderBoostJobs > 100000) c.shadowRecorderBoostJobs = 100000;
+  c.gbufferRecorderPriority = static_cast<int>(GetPrivateProfileIntW(L"Model", L"GBufferRecorderPriority", 0, ini.c_str()));
+  if (c.gbufferRecorderPriority < -2) c.gbufferRecorderPriority = -2;
+  if (c.gbufferRecorderPriority > 2) c.gbufferRecorderPriority = 2;
+  c.recorderPriorityBoost = GetPrivateProfileIntW(L"Model", L"RecorderPriorityBoost", 1, ini.c_str()) != 0;
+  c.renderWaitBudgetUs = static_cast<int>(GetPrivateProfileIntW(L"Model", L"RenderWaitBudgetUs", 1000, ini.c_str()));
+  if (c.renderWaitBudgetUs < 0) c.renderWaitBudgetUs = 0;
+  if (c.renderWaitBudgetUs > 20000) c.renderWaitBudgetUs = 20000;
   c.gbufferRecorderHelpers = GetPrivateProfileIntW(L"Model", L"GBufferRecorderHelpers", 2, ini.c_str());
   if (c.gbufferRecorderHelpers < 0) c.gbufferRecorderHelpers = 0;
   if (c.gbufferRecorderHelpers > 2) c.gbufferRecorderHelpers = 2;
@@ -1024,6 +1038,7 @@ void RestoreD3dHooks();
 #include <d3d11shader.h>
 #include <dxgi1_4.h>
 #include "deferred_rec.h"  // R15 A1: deferred-context worker pool of the shadow and G-buffer recorders
+#include "render_wait.h"   // 12 Oct review R5: one render-thread wait budget per frame
 namespace {
 
 void ApplyTimerConfig() {
@@ -1562,6 +1577,7 @@ void __fastcall HookCollect(void* self, uint32_t count, uint8_t* infos, uint8_t*
                             void* taskQueue, uint32_t flags) {
   void* scene = static_cast<uint8_t*>(self) - 8;
   if (!g_scene.exchange(scene)) Log("scene: DCSScene at %p", scene);
+  rtwait::g_frameGen.fetch_add(1, std::memory_order_release);  // R5: a new frame's wait budget
   g_lastCollectFlags = flags;
   {
     auto* tmax = reinterpret_cast<volatile uint32_t*>(static_cast<uint8_t*>(scene) + kSceneCollectThreadsMax);
@@ -1899,6 +1915,9 @@ void ApplyGBufferBatch() {
 // the compiled keys: retried every second); off = pass-through. Off while
 // G-buffer batching is on (its leaders swap [item+0xd4]).
 void ApplyShadowRecorder() {
+  rtwait::g_budgetUs = static_cast<uint32_t>(g_cfg.renderWaitBudgetUs);
+  shrec::g_boostJobs = static_cast<uint32_t>(g_cfg.shadowRecorderBoostJobs);
+  shrec::g_priorityBoost = g_cfg.recorderPriorityBoost;  // at the pool's start
   shrec::g_scope = g_cfg.shadowRecorderScope;
   shrec::g_waitUs = static_cast<uint32_t>(g_cfg.shadowRecorderWaitUs);
   shrec::g_priority = g_cfg.shadowRecorderPriority;  // THREAD_PRIORITY_* are -2..2
@@ -1917,6 +1936,9 @@ void ApplyShadowRecorder() {
 // G-buffer keys: collected while it is on, retried every second); off =
 // pass-through. Off while G-buffer batching is on.
 void ApplyGBufferRecorder() {
+  rtwait::g_budgetUs = static_cast<uint32_t>(g_cfg.renderWaitBudgetUs);
+  gbrec::g_priority = g_cfg.gbufferRecorderPriority;  // THREAD_PRIORITY_* are -2..2; at the pool's start
+  gbrec::g_priorityBoost = g_cfg.recorderPriorityBoost;
   gbrec::g_scope = g_cfg.gbufferRecorderScope;
   gbrec::g_waitUs = static_cast<uint32_t>(g_cfg.gbufferRecorderWaitUs);
   gbrec::g_island = static_cast<uint32_t>(g_cfg.gbufferRecorderIsland);
@@ -3740,6 +3762,11 @@ DWORD WINAPI WorkerThread(void*) {
       if (gbrec::g_on.load() && gbrec::Ready() && !g_benchRunningFlag.load()) {
         gbrec::LogCounters("10 s", static_cast<double>(fr - censusFrames0));
         gbrec::ResetCounters();
+      }
+      // R5: every render-thread wait of the module, per frame.
+      if (!g_benchRunningFlag.load()) {
+        rtwait::LogCounters("10 s");
+        rtwait::ResetCounters();
       }
       censusFrames0 = fr;
     }

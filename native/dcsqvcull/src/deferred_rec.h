@@ -658,6 +658,7 @@ struct PoolConfig {
   DWORD spinUs = 300;     // Wait spins this long before blocking on the done events
   DWORD joinMs = 3000;    // Stop: per-pool join limit
   const char* name = "deferred rec";
+  bool priorityBoost = true;  // false: SetThreadPriorityBoost(disable) on every worker (R6)
 };
 
 class Pool {
@@ -705,6 +706,9 @@ class Pool {
         return false;
       }
       SetThreadPriority(w.thread, cfg_.priority);
+      // 12 Oct review R6: without the dynamic boost a woken worker does not
+      // preempt DCS's own threads of the same priority.
+      if (!cfg_.priorityBoost) SetThreadPriorityBoost(w.thread, TRUE);
       ++n_;
     }
     started_ = true;

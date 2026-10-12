@@ -125,15 +125,20 @@ public static class ConfigurationWriters
         ShadowRecorder={(p.EngineShadowRecorder ? 1 : 0)}
         ShadowRecorderScope=0x30f
         ShadowRecorderWaitUs=200
-        ShadowRecorderPriority=0
+        ShadowRecorderPriority={(p.EngineLightRecorders ? -1 : 0)}
         ShadowRecorderSplit=0xf
         ShadowRecorderInstancing=1
         ; Helper threads per shadow cascade: 1 on CPUs with 8 logical cores or fewer, so DCS keeps its own threads.
-        ShadowRecorderHelpers={(Environment.ProcessorCount <= 8 ? 1 : 3)}
+        ShadowRecorderHelpers={(p.EngineLightRecorders || Environment.ProcessorCount <= 8 ? 1 : 3)}
+        ShadowRecorderBoostJobs={(p.EngineLightRecorders ? 0 : 240)}
         GBufferRecorder={(p.EngineGBufferRecorder ? 1 : 0)}
         GBufferRecorderScope=0x10055
         GBufferRecorderMaxSegments=12
-        GBufferRecorderHelpers=2
+        GBufferRecorderHelpers={(p.EngineLightRecorders ? 1 : 2)}
+        GBufferRecorderPriority={(p.EngineLightRecorders ? -1 : 0)}
+        RecorderPriorityBoost={(p.EngineLightRecorders ? 0 : 1)}
+        ; The most DCS's render thread waits per frame for the recorders and shadow plans together (0: no shared budget).
+        RenderWaitBudgetUs={Math.Clamp(p.EngineRenderWaitBudgetUs, 0, VrProfile.EngineRenderWaitBudgetMax)}
         GBufferRecorderWaitUs=300
         GBufferRecorderIsland=30
         GBufferRecorderRedo=1

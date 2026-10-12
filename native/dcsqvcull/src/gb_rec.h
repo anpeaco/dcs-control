@@ -3036,6 +3036,8 @@ std::atomic<uint32_t> g_maxSeg{kDefaultMaxSeg};  // [Model] GBufferRecorderMaxSe
 std::atomic<bool> g_redoOn{true};      // [Model] GBufferRecorderRedo: re-record segments whose textures changed
 std::atomic<bool> g_swapAhead{true};   // [Model] GBufferRecorderSwapAhead: do a due mip-set swap at the entry
 std::atomic<uint32_t> g_helpers{kThreads - 1};   // [Model] GBufferRecorderHelpers (0-2 per job)
+std::atomic<int> g_priority{THREAD_PRIORITY_NORMAL};  // [Model] GBufferRecorderPriority, at the pool's start (R6)
+std::atomic<bool> g_priorityBoost{true};              // [Model] RecorderPriorityBoost, at the pool's start (R6)
 std::atomic<bool> g_cockpit{false};    // [Model] GBufferRecorderCockpit (R24 4; read at install for the pool size)
 std::atomic<bool> g_byOrdinal{false};  // [Model] GBufferRecorderByOrdinal: slots by plain ordinal (before R24)
 bool g_idMode = false;                 // executions bound by identity (install: not by ordinal and the build matches)
@@ -3731,11 +3733,13 @@ int RedoReady(PassCtx& pc, uint32_t k) {
     st = j.redoState[k].load(std::memory_order_acquire);
   }
   if (st == kRedoRun) {
-    const double limit = (std::min)(2000.0, 2.0 * j.segs[k].draws);
+    // R5: within what is left of the frame's render-thread wait budget too.
+    const double limit = rtwait::Allow((std::min)(2000.0, 2.0 * j.segs[k].draws));
     const int64_t t0 = defrec::Qpc();
     const double q = defrec::QpcToUs();
     while ((st = j.redoState[k].load(std::memory_order_acquire)) == kRedoRun && (defrec::Qpc() - t0) * q < limit)
       _mm_pause();
+    rtwait::Charge(rtwait::kGbRedo, (defrec::Qpc() - t0) * q);
   }
   Stat& s = g_slot[pc.slot].st;
   if (st == kRedoOk && j.redoCl[k]) return kSExecuted;
@@ -4550,13 +4554,15 @@ void TakeJob(PassCtx& pc, void** vec) {
   Slot& sl = g_slot[pc.slot];
   Stat& st = sl.st;
   Job& j = *sl.job;
+  // R5: within what is left of the frame's render-thread wait budget too.
+  const double budget = rtwait::Allow(static_cast<double>(g_waitUs.load()));
   const int64_t t0 = defrec::Qpc();
-  const double budget = static_cast<double>(g_waitUs.load());
   const double k = defrec::QpcToUs();
   while (SlotBusy(pc.slot) && (defrec::Qpc() - t0) * k < budget) _mm_pause();
   const uint64_t ns = NsSince(t0);
   st.waitNs += ns;
   NoteMax(st.waitMaxNs, ns);
+  rtwait::Charge(rtwait::kGbTake, ns / 1000.0);
   if (SlotBusy(pc.slot)) {
     pc.reason = kPLate;
     sl.lateEntry = g_entryQpc;  // its timeline is read once the workers are idle
@@ -5071,11 +5077,8 @@ bool Arm(int s) {
 // worker is idle. False while it still runs.
 bool DropStale(int s) {
   Slot& sl = g_slot[s];
-  if (SlotBusy(s)) {
-    const int64_t t0 = defrec::Qpc();
-    while (SlotBusy(s) && (defrec::Qpc() - t0) * defrec::QpcToUs() < 200.0) _mm_pause();
-    if (SlotBusy(s)) return false;
-  }
+  // R5: within the frame's render-thread wait budget, and counted in it.
+  if (rtwait::SpinWhile(rtwait::kGbDrop, 200.0, [&] { return SlotBusy(s); })) return false;
   DropPoolLists(s);
   ReleaseSegLists(*sl.job);
   sl.armed = false;
@@ -5361,7 +5364,8 @@ bool Install() {
   defrec::PoolConfig pc;
   pc.workers = g_poolSlots * g_threads;
   pc.cb.mode = defrec::CbMode::kOffsets;
-  pc.priority = THREAD_PRIORITY_NORMAL;
+  pc.priority = g_priority.load();
+  pc.priorityBoost = g_priorityBoost.load();
   pc.name = "gbuffer recorder";
   if (!g_pool.Start(dev, pc)) return fail("its workers did not start");
   if (g_pool.Workers() < g_poolSlots * g_threads) {

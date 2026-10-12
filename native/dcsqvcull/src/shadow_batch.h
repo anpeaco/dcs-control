@@ -621,7 +621,9 @@ Plan* PlanForPass(void** vec) {
         QueryPerformanceCounter(&a);
         // A planner still building after 2 ms was most likely preempted: build
         // it here instead (one plan's work) rather than hold the frame longer.
-        const int64_t limit = static_cast<int64_t>(2000.0 / (g_qpcToUs > 0 ? g_qpcToUs : 1.0));  // 2 ms
+        // R5: and never past the frame's render-thread wait budget.
+        const int64_t limit =
+            static_cast<int64_t>(rtwait::Allow(2000.0) / (g_qpcToUs > 0 ? g_qpcToUs : 1.0));  // 2 ms at most
         for (;;) {
           if (p->state.load(std::memory_order_acquire) != kBuilding) break;
           YieldProcessor();
@@ -630,6 +632,7 @@ Plan* PlanForPass(void** vec) {
         }
         QueryPerformanceCounter(&b);
         const uint64_t us = static_cast<uint64_t>((b.QuadPart - a.QuadPart) * g_qpcToUs);
+        rtwait::Charge(rtwait::kShadowPlan, static_cast<double>(us));
         g_planWaits++;
         g_planWaitUs += us;
         NoteMax(g_planWaitMaxUs, us);

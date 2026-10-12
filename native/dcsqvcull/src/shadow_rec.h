@@ -1224,7 +1224,9 @@ constexpr uint32_t kMinSplitGroups = 64;   // textured groups worth a helper lis
 // more ExecuteCommandList at the pass (about 8 us) [M]. Pure.
 constexpr size_t kOneHelperN = 400, kTwoHelpersN = 1500;
 constexpr double kTightMs = 0.25;
-constexpr uint32_t kBoostJobs = 240;
+constexpr uint32_t kBoostJobs = 240;  // default of [Model] ShadowRecorderBoostJobs
+std::atomic<uint32_t> g_boostJobs{kBoostJobs};  // 0: no extra helper after a late or tight job (R6)
+std::atomic<bool> g_priorityBoost{true};        // [Model] RecorderPriorityBoost
 inline uint32_t HelpersFor(size_t lastN, bool tight, uint32_t cap) {
   if (cap > static_cast<uint32_t>(kThreads - 1)) cap = kThreads - 1;
   if (!cap) return 0;
@@ -4256,8 +4258,9 @@ void TakeJob(PassCtx& pc, void** vec) {
   Casc& cs = g_casc[pc.slot];
   Stat& st = cs.st;
   Job& j = *cs.job;
+  // R5: within what is left of the frame's render-thread wait budget too.
+  const double budget = rtwait::Allow(static_cast<double>(g_waitUs.load()));
   const int64_t t0 = defrec::Qpc();
-  const double budget = static_cast<double>(g_waitUs.load());
   const double k = defrec::QpcToUs();
   auto left = [&] {
     const double spent = (defrec::Qpc() - t0) * k;
@@ -4278,12 +4281,13 @@ void TakeJob(PassCtx& pc, void** vec) {
   const uint64_t ns = NsSince(t0);
   st.waitNs += ns;
   NoteMax(st.waitMaxNs, ns);
+  rtwait::Charge(rtwait::kShadowTake, ns / 1000.0);
   if (!ready) {
     pc.reason = kPLate;  // abandoned: the workers still own the job
     cs.lateMaint = true;
     cs.lateEntry = g_entryQpc;  // its timeline is read once the workers are idle
     cs.latePassQpc = t0;
-    cs.boost = kBoostJobs;  // one more helper for the next jobs
+    cs.boost = g_boostJobs.load(std::memory_order_relaxed);  // one more helper for the next jobs
     return;
   }
   ID3D11CommandList* cl[kThreads] = {};
@@ -4337,7 +4341,7 @@ void TakeJob(PassCtx& pc, void** vec) {
   }
   // Ready with less than kTightMs to spare: one more helper for the next jobs.
   const int64_t done = HelpersDone(j) > j.tDone ? HelpersDone(j) : j.tDone;
-  if (done && (t0 - done) * k < kTightMs * 1000.0) cs.boost = kBoostJobs;
+  if (done && (t0 - done) * k < kTightMs * 1000.0) cs.boost = g_boostJobs.load(std::memory_order_relaxed);
   if (j.vec != vec || j.result != kBuildOk) {
     drop();
     pc.reason = j.result == kBuildOversize ? kPOversize : kPIdentity;
@@ -4586,9 +4590,8 @@ bool DropStale(int s) {
       j.goState.store(kGoAbort, std::memory_order_release);
       SetEvent(j.go);
     }
-    const int64_t t0 = defrec::Qpc();
-    while (SlotBusy(s) && (defrec::Qpc() - t0) * defrec::QpcToUs() < 200.0) _mm_pause();
-    if (SlotBusy(s)) return false;
+    // R5: within the frame's render-thread wait budget, and counted in it.
+    if (rtwait::SpinWhile(rtwait::kShadowDrop, 200.0, [&] { return SlotBusy(s); })) return false;
   }
   DropLists(s);
   ReleaseSnapshot(j);
@@ -4939,6 +4942,7 @@ bool Install() {
   pc.workers = kThreads * kSlots;
   pc.cb.mode = defrec::CbMode::kOffsets;
   pc.priority = g_priority.load();
+  pc.priorityBoost = g_priorityBoost.load();
   pc.name = "shadow recorder";
   if (!g_pool.Start(dev, pc)) return fail("its workers did not start");
   g_priorityApplied = pc.priority;

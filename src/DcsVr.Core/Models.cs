@@ -298,6 +298,15 @@ public sealed record VrProfile
     /// <summary>[Timing] CacheUs: how often the cached time is refreshed, in microseconds.</summary>
     public int EngineTimerRefreshUs { get; init; } = 1000;
     public const int EngineTimerRefreshMin = 250, EngineTimerRefreshMax = 2000;
+    /// <summary>[Model] RenderWaitBudgetUs (12 Oct review R5): the most DCS's render thread waits per frame for the
+    /// module's worker threads, all features together; past it their passes are drawn as stock. 0: each wait keeps only its
+    /// own cap (the module before this setting).</summary>
+    public int EngineRenderWaitBudgetUs { get; init; } = 1000;
+    public const int EngineRenderWaitBudgetMax = 5000;
+    /// <summary>Lighter recorder threads (12 Oct review R6): one helper per shadow cascade and per G-buffer job instead of
+    /// three and two, the recorders' workers below normal priority without Windows' wake-up boost, and no extra helper
+    /// after a late job. Off: the module's defaults.</summary>
+    public bool EngineLightRecorders { get; init; }
     /// <summary>[Hotkeys] Toggle: switches the enabled engine optimizations off and back on in flight, to compare
     /// (one beep off, two beeps on). "virtual-key:modifiers" like the other in-flight keys; "Off" disables it.</summary>
     public string EngineToggleKey { get; init; } = NeuralHotkeys.EngineDefault;
