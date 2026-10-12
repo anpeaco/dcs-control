@@ -619,7 +619,9 @@ Plan* PlanForPass(void** vec) {
       } else if (st == kBuilding) {
         LARGE_INTEGER a, b;
         QueryPerformanceCounter(&a);
-        const int64_t limit = static_cast<int64_t>(20000.0 / (g_qpcToUs > 0 ? g_qpcToUs : 1.0));  // 20 ms
+        // A planner still building after 2 ms was most likely preempted: build
+        // it here instead (one plan's work) rather than hold the frame longer.
+        const int64_t limit = static_cast<int64_t>(2000.0 / (g_qpcToUs > 0 ? g_qpcToUs : 1.0));  // 2 ms
         for (;;) {
           if (p->state.load(std::memory_order_acquire) != kBuilding) break;
           YieldProcessor();

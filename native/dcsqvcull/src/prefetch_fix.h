@@ -18,8 +18,9 @@
 //
 // Replacement: a call over the same (first address, range count, total
 // bytes) as one seen less than WindowMs ago returns TRUE without the system
-// call. 256 back-to-back skips on one thread within 10 ms yield one tick
-// (spin guard). Observe = every call passes through (counted).
+// call. Every 256 back-to-back skips on one thread yield the rest of its time
+// slice to a ready thread, never sleep (spin guard). Observe = every call
+// passes through (counted).
 //
 // Lifetime (hot reload, kill switch, Mode=off):
 //   * Every patched slot is recorded and restored on uninstall to the real
@@ -65,8 +66,7 @@ using GetProcFn = FARPROC(WINAPI*)(HMODULE, LPCSTR);
 
 enum Mode : int { kOff = 0, kObserve = 1, kSkip = 2 };
 
-constexpr unsigned kSpinSkips = 256;    // consecutive skips on one thread...
-constexpr uint64_t kSpinWindowMs = 10;  // ...within this time: yield one tick
+constexpr unsigned kSpinSkips = 256;  // consecutive skips on one thread: yield
 constexpr uint32_t kDefaultWindowMs = 1000;
 
 // Function addresses kept in this module's own data are stored XOR-encoded:
@@ -104,7 +104,6 @@ constexpr unsigned kTableBits = 16;
 std::atomic<uint64_t> g_table[1u << kTableBits];
 
 thread_local uint32_t t_skipRun = 0;
-thread_local uint64_t t_spinStart = 0;
 
 inline bool SeenRecently(ULONG_PTR address, ULONG_PTR count, ULONG_PTR bytes, uint64_t now, uint32_t window) {
   uint64_t h = address * 0x9E3779B97F4A7C15ull ^ count * 0xC2B2AE3D27D4EB4Full ^ bytes * 0x165667B19E3779F9ull;
@@ -131,10 +130,11 @@ BOOL WINAPI Replacement(HANDLE process, ULONG_PTR count, PWIN32_MEMORY_RANGE_ENT
                      g_windowMs.load(std::memory_order_relaxed))) {
       s.skipped.fetch_add(1, std::memory_order_relaxed);
       // A caller spinning on these calls would turn a dropped prefetch into a
-      // user-mode spin: yield one tick, only for back-to-back skips.
-      if (t_skipRun++ == 0) t_spinStart = now;
-      if (t_skipRun >= kSpinSkips) {
-        if (now - t_spinStart < kSpinWindowMs) Sleep(1);
+      // user-mode spin: let a ready thread run, only for back-to-back skips.
+      // Not Sleep(1): with GetTickCount64's 15.6 ms resolution its time test
+      // almost always passed, parking DCS's terrain workers for a timer tick.
+      if (++t_skipRun >= kSpinSkips) {
+        SwitchToThread();
         t_skipRun = 0;
       }
       s.exits.fetch_add(1, std::memory_order_release);

@@ -212,7 +212,7 @@ void Modes(void** imp, void* impKernel) {
   pffix::Replacement(GetCurrentProcess(), 0, &range, 0);
   Check(Skipped() == s0, "prefetch skip: only this process's own non-empty prefetches are skipped");
   if (self) CloseHandle(self);
-  // Spin guard: 256 back-to-back skips on one thread reset the run (one tick yielded).
+  // Spin guard: 256 back-to-back skips on one thread reset the run (time slice yielded).
   pffix::Apply(pffix::kSkip, 60000);
   ProbeStored(g_buffer + 8192, 4096);
   for (int i = 0; i < 300; ++i) ProbeStored(g_buffer + 8192, 4096);
