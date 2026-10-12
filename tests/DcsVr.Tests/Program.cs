@@ -620,7 +620,9 @@ Test("Last flight: late frames in headset refreshes, missed and doubled refreshe
     var display = 1_000_000_000_000UL;
     for (var k = 0; k < 3600; k++)
     {
-        display += k == 0 ? 0 : k == 1000 ? 50_000_001UL : k == 2000 ? 0 : 16_666_667UL;
+        // 3000 and 3200: the runtime moves its predicted display time by 10 ms and -10 ms (off the refresh grid); 3300
+        // skips about 2.6 refreshes, counted as 2 missed.
+        display += k == 0 ? 0 : k == 1000 ? 50_000_001UL : k == 2000 ? 0 : k == 3000 ? 26_666_667UL : k == 3200 ? 6_666_667UL : k == 3300 ? 43_333_334UL : 16_666_667UL;
         var at = 10000 + k * 50.0 / 3;
         lines.Add(FormattableString.Invariant($"seq=5 ms={at:F3} tid=2 phase=E op=internal_end_frame result=0 dur_us=50 a={display} b=1 c=1"));
         if (k % 2 == 0)
@@ -630,13 +632,75 @@ Test("Last flight: late frames in headset refreshes, missed and doubled refreshe
         }
     }
     var delivery = LastFlight.ParseOfxr(lines)!.Delivery;
-    Require(delivery is { HeadsetPeriodMs: 16.67, LateFrames: 3, Late1: 1, Late2: 2, Late3Plus: 0, MissedRefreshes: 2, DoubledRefreshes: 1, EndFramesOver30Ms: 1, EndFrameP99Ms: 5,
+    Require(delivery is { HeadsetPeriodMs: 16.67, LateFrames: 3, Late1: 1, Late2: 2, Late3Plus: 0, MissedRefreshes: 4, DoubledRefreshes: 1, DisplayCorrections: 2, EndFramesOver30Ms: 1, EndFrameP99Ms: 5,
         QueueLagP50Ms: 5, QueueLagP90Ms: 20, QueueLagOverPeriodShare: .2, RealQueueLagP50Ms: null } d && d.Seconds is > 50 and < 60 && d.LatePerMinute == Math.Round(3 * 60.0 / d.Seconds, 1),
         JsonData.Serialize(delivery));
     // Without display times (or with ones that do not divide the slot), late frames are counted in whole slots and no
     // refreshes are judged.
     var slots = LastFlight.ParseOfxr(lines.Where(l => !l.Contains("internal_end_frame")))!.Delivery;
     Require(slots is { HeadsetPeriodMs: null, MissedRefreshes: null, LateFrames: 3, Late1: 3 }, JsonData.Serialize(slots));
+});
+Test("Last flight: in 3× a frame is late past a quarter slot, as in 2×, and time out of focus is not flying", () =>
+{
+    // DCS at 30 FPS on a 90 Hz headset (3 refreshes a slot) from 10 s: one frame 6.7 ms over its slot (on time), one
+    // 11.7 ms (one refresh late), one 22.7 ms (two). Then the session leaves focus and DCS runs at 90 FPS for 15 s.
+    var lines = new List<string> { "seq=1 ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242",
+        "seq=2 ms=9000.000 tid=1 phase=I op=session_state result=5 dur_us=0 a=1 b=0 c=0" };
+    var ms = 10000.0;
+    for (var i = 0; i < 1800; i++)
+    {
+        ms += i == 0 ? 0 : i == 600 ? 40 : i == 900 ? 45 : i == 1200 ? 56 : 100.0 / 3;
+        lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=500 a=1 b=33333333 c=1"));
+    }
+    var display = 1_000_000_000_000UL;
+    for (var k = 0; k < 5400; k++, display += 11_111_111UL)
+        lines.Add(FormattableString.Invariant($"seq=5 ms={10000 + k * 100.0 / 9:F3} tid=2 phase=E op=internal_end_frame result=0 dur_us=50 a={display} b=1 c=1"));
+    lines.Add("seq=6 ms=70500.000 tid=1 phase=I op=session_state result=4 dur_us=0 a=1 b=0 c=0");
+    for (var i = 1; i <= 1350; i++)
+        lines.Add(FormattableString.Invariant($"seq=7 ms={70500 + i * 100.0 / 9:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=500 a=1 b=11111111 c=1"));
+    var parsed = LastFlight.ParseOfxr(lines)!;
+    Require(parsed.Delivery is { HeadsetPeriodMs: 11.11, LateFrames: 2, Late1: 1, Late2: 1, Late3Plus: 0, MissedRefreshes: 0, DisplayCorrections: 0 }, JsonData.Serialize(parsed.Delivery));
+    Require(parsed.Pacing is { RenderedFps: 30, Seconds: 60 }, JsonData.Serialize(parsed.Pacing));
+});
+Test("Last flight: a short freeze stays in steady flight, with the headset runtime's long frame calls", () =>
+{
+    // DCS at 30 FPS from 10 s to 70 s, one 240 ms freeze at 30 s (24 frames in that second, under 90% of the rate);
+    // Virtual Desktop's xrEndFrame held OFXR's presenter 93 ms twice in it. A 1.5 s stop at 50 s leaves a second under
+    // 10 frames: like a mission's end (DCS's menu after it runs at the full rate), it is not steady flight. At 70 s DCS
+    // stops for a loading screen.
+    var lines = new List<string> { "seq=1 ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242" };
+    var ms = 10000.0;
+    for (var i = 0; i < 1749; i++)
+    {
+        ms += i == 0 ? 0 : i == 600 ? 240 : i == 1200 ? 1500 : 100.0 / 3;
+        lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=500 a=1 b=33333333 c=1"));
+    }
+    lines.Add("seq=4 ms=30050.000 tid=2 phase=E op=internal_end_frame result=0 dur_us=93000 a=1 b=1 c=1");
+    lines.Add("seq=4 ms=30150.000 tid=2 phase=E op=internal_end_frame result=0 dur_us=93000 a=2 b=1 c=1");
+    lines.Add("seq=4 ms=40000.000 tid=2 phase=E op=internal_end_frame result=0 dur_us=50 a=3 b=1 c=1");
+    for (var i = 0; i < 6; i++) lines.Add(FormattableString.Invariant($"seq=5 ms={70500 + i * 500}.000 tid=1 phase=E op=app_wait_frame result=0 dur_us=400000 a=1 b=33333333 c=1"));
+    var parsed = LastFlight.ParseOfxr(lines)!;
+    // 10-69 s less the 2 s at each end, and 48-53 s around the stop: the freeze no longer takes 5 s out with it.
+    Require(parsed.Delivery is { Seconds: 50, LateFrames: 1, Late3Plus: 1, Freezes: 1, LongestFrameMs: 240 }, JsonData.Serialize(parsed.Delivery));
+    Require(parsed.Hitches is { Seconds: 50, RuntimeBlocks: 2 }, JsonData.Serialize(parsed.Hitches));
+});
+Test("Last flight: the engine switch is compared within the mission load it was used in", () =>
+{
+    // Two mission loads at 30 FPS: 10-70 s (a light mission, CPU 3 ms, optimizations on), a loading screen, then 85-145 s
+    // with the switch at 115 s (CPU 6 ms on, 6.5 ms off).
+    var lines = new List<string> { "seq=1 ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242" };
+    foreach (var (from, cpu) in new[] { (10000.0, (Func<double, int>)(_ => 3000)), (85000.0, at => at < 115000 ? 6000 : 6500) })
+        for (var i = 0; i < 1800; i++)
+        {
+            var ms = from + i * 100.0 / 3;
+            lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=5000 a=1 b=33333333 c=1"));
+            lines.Add(FormattableString.Invariant($"seq=4 ms={ms + 20:F3} tid=1 phase=I op=frame_load result=1 dur_us=0 a={cpu(ms)} b=12000 c={33333UL | (450UL << 32) | (720UL << 48)}"));
+        }
+    for (var i = 0; i < 20; i++) lines.Add(FormattableString.Invariant($"seq=5 ms={71000 + i * 500}.000 tid=1 phase=E op=app_wait_frame result=0 dur_us=400000 a=1 b=33333333 c=1"));
+    var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
+    var switched = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:01:55.000 hotkey: engine optimizations OFF"], ofxrStart, ofxrStart);
+    var engine = LastFlight.ParseOfxr(lines, switched)!.Engine;
+    Require(engine is { OnCpuMs: 6, OffCpuMs: 6.5, OnSeconds: 30, OffSeconds: 28, LeftOutSeconds: 60 }, JsonData.Serialize(engine));
 });
 Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, what limits it, and the switch's CPU and GPU", () =>
 {

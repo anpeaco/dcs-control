@@ -60,12 +60,15 @@ public sealed record FrameCadence(double RenderedFps, double? TargetFps, double?
 /// (OFXR's once-a-second vram_status, written while "VRAM in the headset panel" is on).</summary>
 public sealed record FramegenCost(double? GpuPerPairMs, int? VramPeakMiB, int? VramBudgetMiB, int? GpuMemoryMiB);
 /// <summary>The flight's own A/B when the pilot used the engine optimizations' in-flight switch: DCS's frames in the
-/// stretches with the optimizations on and off (the first 2 s after each switch left out). The frame figures are null
-/// unless both sides have at least 20 s. The scene can differ between the stretches.</summary>
+/// stretches with the optimizations on and off (the first 2 s after each switch left out), within the mission loads the
+/// switch was used in (a stretch of flight between two loading screens), so another mission flown in the same session
+/// is not compared. The frame figures are null unless both sides have at least 20 s. The scene can still differ
+/// between the stretches (an earlier and a later part of the mission).</summary>
 /// <param name="OnCpuMs">DCS's median CPU time per frame in the stretches with the optimizations on (OFXR's frame_load);
 /// the GPU likewise. Null without those records, or unless both sides have at least 20 s.</param>
+/// <param name="LeftOutSeconds">Flying seconds in mission loads without a switch, not compared.</param>
 public sealed record EngineComparison(int Switches, double OnSeconds, double OffSeconds, double? OnFrameMs, double? OffFrameMs, double? OnWaitMs, double? OffWaitMs,
-    double? OnCpuMs = null, double? OffCpuMs = null, double? OnGpuMs = null, double? OffGpuMs = null);
+    double? OnCpuMs = null, double? OffCpuMs = null, double? OnGpuMs = null, double? OffGpuMs = null, int LeftOutSeconds = 0);
 /// <summary>DCS's CPU and GPU time per frame against its frame slot, from OFXR's frame_load records (one per DCS frame,
 /// DCS Control's patch 0017), over the flying seconds.</summary>
 /// <param name="CpuP50Ms">DCS's CPU time per frame: the time between two frames less what OFXR held it for pacing. It
@@ -104,23 +107,32 @@ public sealed record FrameLoad(double CpuP50Ms, double CpuP90Ms, double CpuP99Ms
 /// texture it was about to write.</param>
 /// <param name="DisplayTimeSteps">display_time_correction: DCS's predicted display time moved by a whole period.</param>
 /// <param name="ClockClamps">virtual_clock_clamp: OFXR's frame clock pulled back into line.</param>
+/// <param name="RuntimeBlocks">internal_end_frame over 30 ms: the headset runtime's xrEndFrame held OFXR's presenter, and
+/// through it DCS (Virtual Desktop blocks about 93 ms at a time, two or three calls in a row; R19).</param>
 public sealed record HitchSignals(int Seconds, int RuntimeImagesMade, int RuntimeImagesGivenBack, int InPlaceWaits, int ContinuityResets,
-    int UnwrittenHandovers, int UnwrittenAtNextSlot = 0, int StagingWaits = 0, int DisplayTimeSteps = 0, int ClockClamps = 0);
+    int UnwrittenHandovers, int UnwrittenAtNextSlot = 0, int StagingWaits = 0, int DisplayTimeSteps = 0, int ClockClamps = 0, int RuntimeBlocks = 0);
 /// <summary>How DCS's frames reached the headset over the steady seconds: seconds at 90% or more of the frame rate OFXR
-/// paced DCS to, with the 2 s either side as well (so pauses, loading screens and their edges are left out). Counted in
-/// headset refresh periods, the steps frame times fall into, rather than against a multiple of the median.</summary>
+/// paced DCS to, with the 2 s either side as well (so pauses, loading screens and their edges are left out). A dip of
+/// up to 3 s between such seconds, 10 frames a second or more, is a freeze in flight and stays in. Counted in headset refresh periods, the steps
+/// frame times fall into, rather than against a multiple of the median.</summary>
 /// <param name="HeadsetPeriodMs">The headset's refresh period, from the display times OFXR submitted (null: not in the
 /// log; late frames are then counted in whole frame slots).</param>
-/// <param name="LateFrames">DCS frames that came one or more headset periods after their slot; split by how far.</param>
+/// <param name="LateFrames">DCS frames that came more than a quarter of their slot after it, split by how many headset
+/// periods late (at least one).</param>
 /// <param name="MissedRefreshes">Headset refreshes OFXR submitted nothing new for (the display time stepped by more
 /// than one period); <paramref name="DoubledRefreshes"/>: two submissions for the same refresh.</param>
+/// <param name="DisplayCorrections">Display-time steps under two refreshes and off the refresh grid: the runtime moved
+/// its predicted display time (Virtual Desktop does, by a few ms once a second). Not counted as missed or doubled.</param>
 /// <param name="EndFrameP99Ms">DCS's time in xrEndFrame (handing its frame over), tail percentiles and the count over
 /// 30 ms.</param>
 /// <param name="QueueLagP50Ms">How long after each generated frame's hand-over the headset runtime's queue got past it
 /// (OFXR's join probe, log on); <paramref name="QueueLagOverPeriodShare"/>: the share later than one refresh.</param>
+/// <param name="Freezes">DCS frames that took 100 ms or more (a stall the pilot sees), also among the late frames;
+/// <paramref name="LongestFrameMs"/>: the longest frame.</param>
 public sealed record FrameDelivery(int Seconds, double? HeadsetPeriodMs, int LateFrames, int Late1, int Late2, int Late3Plus, double LatePerMinute,
     int? MissedRefreshes, int? DoubledRefreshes, double? MissedPerMinute, double? EndFrameP99Ms, double? EndFrameP999Ms, int EndFramesOver30Ms,
-    double? QueueLagP50Ms, double? QueueLagP90Ms, double? QueueLagOverPeriodShare, double? RealQueueLagP50Ms);
+    double? QueueLagP50Ms, double? QueueLagP90Ms, double? QueueLagOverPeriodShare, double? RealQueueLagP50Ms, int? DisplayCorrections = null,
+    int Freezes = 0, double? LongestFrameMs = null);
 /// <summary>What the PC did during the flight, from the flight helper's once-a-second record (<see cref="FlightMonitor"/>),
 /// over the flying seconds when OFXR's log gives them.</summary>
 /// <param name="CpuP90">The whole CPU's use, p90 of the seconds, percent.</param>
@@ -336,7 +348,7 @@ public static partial class LastFlight
         private long _vramPeak; private int? _vramBudget, _gpuMemory;
         // HitchSignals: when each happened (ms on the log's timeline).
         private readonly List<double> _made = [], _givenBack = [], _inPlaceWaits = [], _resets = [], _unwritten = [], _unwrittenAtSlot = [],
-            _stagingWaits = [], _displaySteps = [], _clamps = [];
+            _stagingWaits = [], _displaySteps = [], _clamps = [], _runtimeBlocks = [];
         // FrameDelivery: each submission to the runtime (ms, display time in ns), and the join probe's marks (916: value ->
         // ms and kind 2 generated / 1 real) with the lags once their 914 arrives (ms of the mark, lag ms, generated).
         private readonly List<(double Ms, ulong DisplayNs)> _submissions = [];
@@ -347,6 +359,17 @@ public static partial class LastFlight
         private readonly List<(double Ms, bool Focused)> _focus = [];
         /// <summary>DCS frames in a second for it to count as flying (loading screens and menus run far slower).</summary>
         private const int FlyingFps = 10;
+        /// <summary>How far off a whole number of refreshes a display-time step may be and still count as on the grid.</summary>
+        private const double OffGridShare = 0.15;
+        /// <summary>The headset runtime's xrEndFrame longer than this held OFXR's presenter (HitchSignals.RuntimeBlocks).</summary>
+        private const ulong RuntimeBlockUs = 30_000;
+        /// <summary>Seconds under the steady rate between steady ones that are still a freeze in flight, not a loading
+        /// screen or a pause.</summary>
+        private const int MaxDipSeconds = 3;
+        /// <summary>A DCS frame this long is a freeze (FrameDelivery.Freezes).</summary>
+        private const double FreezeMs = 100;
+        /// <summary>Seconds without flight that separate two mission loads (a loading screen).</summary>
+        private const int MissionGapSeconds = 5;
 
         public static OfxrScan Of(IEnumerable<string> lines)
         {
@@ -384,6 +407,7 @@ public static partial class LastFlight
                     {
                         Count(_outPerSecond, outMs);
                         if (Whole(line, " a=") is { } displayNs) _submissions.Add((outMs, displayNs));
+                        if (Whole(line, " dur_us=") is > RuntimeBlockUs) _runtimeBlocks.Add(outMs);
                     }
                     return;
                 case "presenter_vsync_lock":
@@ -474,7 +498,7 @@ public static partial class LastFlight
                 bool In(double ms) => ms >= 0 && (int)(ms / 1000) is var s && s < steady.Length && steady[s];
                 int Within(List<double> times) => times.Count(In);
                 hitches = new(seconds, Within(_made), Within(_givenBack), Within(_inPlaceWaits), Within(_resets), Within(_unwritten), Within(_unwrittenAtSlot),
-                    Within(_stagingWaits), Within(_displaySteps), Within(_clamps));
+                    Within(_stagingWaits), Within(_displaySteps), Within(_clamps), Within(_runtimeBlocks));
                 delivery = Delivery(seconds, In, pacing.TargetFps is { } target ? 1000 / target : pacing.IntervalP50Ms);
             }
             var gpu = _gpuUs.Order().ToList();
@@ -484,13 +508,27 @@ public static partial class LastFlight
         }
 
         /// <summary>Per second: at 90% or more of <paramref name="targetFps"/> with the session focused throughout, and so
-        /// were the 2 seconds either side.</summary>
+        /// were the 2 seconds either side. Up to <see cref="MaxDipSeconds"/> focused seconds under that rate, each still
+        /// with <see cref="FlyingFps"/> frames, with such seconds on both sides count as at the rate: a freeze in flight
+        /// (one 240 ms stall leaves 23 frames of 30), which the figures must count, not drop with the 2 s either side
+        /// (R22). A second under FlyingFps is a mission's end or a loading screen (DCS's menu after a mission runs at the
+        /// full rate), and the start and end of the flight have no steady seconds on one side.</summary>
         private bool[]? Steady(double targetFps)
         {
             if (targetFps <= 0 || _appPerSecond.Count == 0) return null;
             var threshold = 0.9 * targetFps;
-            bool Ok(int s) => s >= 0 && s < _appPerSecond.Count && _appPerSecond[s] >= threshold && Focused(s);
-            var steady = new bool[_appPerSecond.Count];
+            var ok = new bool[_appPerSecond.Count];
+            for (var s = 0; s < ok.Length; s++) ok[s] = _appPerSecond[s] >= threshold && Focused(s);
+            for (var s = 1; s < ok.Length; s++)
+            {
+                if (ok[s] || !ok[s - 1]) continue;
+                var end = s;
+                while (end < ok.Length && !ok[end] && Focused(end) && _appPerSecond[end] >= FlyingFps) end++;
+                if (end < ok.Length && ok[end] && end - s <= MaxDipSeconds) Array.Fill(ok, true, s, end - s);
+                s = end;
+            }
+            bool Ok(int s) => s >= 0 && s < ok.Length && ok[s];
+            var steady = new bool[ok.Length];
             for (var s = 0; s < steady.Length; s++) steady[s] = Ok(s - 2) && Ok(s - 1) && Ok(s) && Ok(s + 1) && Ok(s + 2);
             return steady;
         }
@@ -523,25 +561,36 @@ public static partial class LastFlight
             // A period that does not divide the slot (a fixture, a log from another runtime) is not trusted.
             if (period is { } p && (p <= 0 || Math.Abs(slotMs / p - Math.Round(slotMs / p)) > .1)) period = null;
             var unit = period ?? slotMs;
-            var slotUnits = Math.Max(1, (int)Math.Round(slotMs / unit));
-            int late1 = 0, late2 = 0, late3 = 0;
+            int late1 = 0, late2 = 0, late3 = 0, freezes = 0; double? longest = null;
             for (var i = 1; i < _frameMs.Count; i++)
             {
                 if (!steady(_frameMs[i]) || !steady(_frameMs[i - 1])) continue;
-                var behind = (int)Math.Round((_frameMs[i] - _frameMs[i - 1]) / unit) - slotUnits;
-                if (behind == 1) late1++; else if (behind == 2) late2++; else if (behind >= 3) late3++;
+                var interval = _frameMs[i] - _frameMs[i - 1];
+                if (interval >= FreezeMs) freezes++;
+                if (interval > (longest ?? 0)) longest = interval;
+                // Late: over the slot by more than a quarter of it (as scripts/analyze-flight-spikes.py counts, in 2× and
+                // 3× alike), then by how many refreshes.
+                var over = interval - slotMs;
+                if (over <= slotMs / 4) continue;
+                var behind = Math.Max(1, (int)Math.Round(over / unit));
+                if (behind == 1) late1++; else if (behind == 2) late2++; else late3++;
             }
-            int? missed = null, doubled = null;
+            int? missed = null, doubled = null, corrections = null;
             if (period is { } headset)
             {
-                missed = 0; doubled = 0;
+                missed = 0; doubled = 0; corrections = 0;
                 for (var i = 1; i < _submissions.Count; i++)
                 {
                     var (ms, display) = _submissions[i];
                     var (previousMs, previousDisplay) = _submissions[i - 1];
                     if (!steady(ms) || !steady(previousMs) || ms - previousMs > 1000) continue;
-                    var step = (int)Math.Round(((double)display - previousDisplay) / 1e6 / headset);
-                    if (step == 0) doubled++; else if (step > 1) missed += step - 1;
+                    var refreshes = ((double)display - previousDisplay) / 1e6 / headset;
+                    var step = (int)Math.Round(refreshes);
+                    // Under two refreshes and off the grid: the runtime moved its predicted display time (Virtual Desktop
+                    // does, by a few ms once a second), not a missed or doubled refresh. Longer steps are counted to the
+                    // nearest refresh (the runtime's prediction after a late submission is off the grid too).
+                    if (refreshes < 2 && Math.Abs(refreshes - step) > OffGridShare) corrections++;
+                    else if (step == 0) doubled++; else if (step > 1) missed += step - 1;
                 }
             }
             var ends = new List<double>();
@@ -555,20 +604,49 @@ public static partial class LastFlight
                 ends.Count == 0 ? null : Percentile(ends, .99), ends.Count == 0 ? null : Percentile(ends, .999), ends.Count(e => e > 30),
                 lags.Count == 0 ? null : Percentile(lags, .5), lags.Count == 0 ? null : Percentile(lags, .9),
                 lags.Count == 0 ? null : Math.Round((double)lags.Count(l => l > (period ?? slotMs / 2)) / lags.Count, 3),
-                real.Count == 0 ? null : Percentile(real, .5));
+                real.Count == 0 ? null : Percentile(real, .5), corrections, freezes, longest is { } longestMs ? Math.Round(longestMs, 1) : null);
         }
 
         private (FrameCadence?, EngineComparison?, FrameLoad?, (double From, double To)?) Pacing(EngineSwitches? engine)
         {
-            // Flying: from the first 5 seconds in a row with at least FlyingFps DCS frames, every such second.
+            // Flying: from the first 5 seconds in a row with at least FlyingFps DCS frames and the session focused, every
+            // such second (out of focus DCS can run at the headset's rate, unpaced).
+            bool Fly(int s) => _appPerSecond[s] >= FlyingFps && Focused(s);
             int first = -1;
             for (int s = 0, run = 0; s < _appPerSecond.Count && first < 0; s++)
-                if ((run = _appPerSecond[s] >= FlyingFps ? run + 1 : 0) == 5) first = s - 4;
+                if ((run = Fly(s) ? run + 1 : 0) == 5) first = s - 4;
             if (first < 0) return (null, null, null, null);
-            bool Flying(double ms) => (int)(ms / 1000) is var s && s >= first && s < _appPerSecond.Count && _appPerSecond[s] >= FlyingFps;
+            bool Flying(double ms) => (int)(ms / 1000) is var s && s >= first && s < _appPerSecond.Count && Fly(s);
             var seconds = 0; long output = 0;
             for (var s = first; s < _appPerSecond.Count; s++)
-                if (_appPerSecond[s] >= FlyingFps) { seconds++; if (s < _outPerSecond.Count) output += _outPerSecond[s]; }
+                if (Fly(s)) { seconds++; if (s < _outPerSecond.Count) output += _outPerSecond[s]; }
+            // Mission loads: flying stretches apart by MissionGapSeconds or more without flight (a loading screen). The
+            // engine switch is compared only within the loads it was used in, not against another mission flown in the
+            // same session (R23).
+            var missionLoad = new int[_appPerSecond.Count];
+            Array.Fill(missionLoad, -1);
+            for (int s = first, n = -1, gap = MissionGapSeconds; s < missionLoad.Length; s++)
+            {
+                if (!Fly(s)) { gap++; continue; }
+                if (gap >= MissionGapSeconds) n++;
+                gap = 0; missionLoad[s] = n;
+            }
+            var switchedLoads = new HashSet<int>();
+            if (engine is not null)
+                for (var k = 1; k < engine.Stretches.Count; k++)
+                    if (engine.Stretches[k].Off != engine.Stretches[k - 1].Off && LoadAt(engine.Stretches[k].FromMs) is >= 0 and var switchedIn) switchedLoads.Add(switchedIn);
+            // The load a moment belongs to: its second's, or the one either side of a short gap (none across a loading screen).
+            int LoadAt(double ms)
+            {
+                var s = (int)Math.Clamp(ms / 1000, 0, missionLoad.Length - 1);
+                int before = -1, after = -1;
+                for (var x = s; x >= 0 && before < 0; x--) before = missionLoad[x];
+                for (var x = s; x < missionLoad.Length && after < 0; x++) after = missionLoad[x];
+                return before == after ? before : -1;
+            }
+            bool Compared(double ms) => switchedLoads.Contains(missionLoad[(int)(ms / 1000)]);
+            var leftOut = 0;
+            for (var s = first; s < missionLoad.Length; s++) if (missionLoad[s] >= 0 && !switchedLoads.Contains(missionLoad[s])) leftOut++;
             long frames = 0; var intervals = new List<double>(); var waits = new List<double>(); var periods = new List<double>();
             var on = new Side(); var off = new Side(); var stretch = 0;
             for (var i = 0; i < _frameMs.Count; i++)
@@ -582,7 +660,7 @@ public static partial class LastFlight
                 var interval = ms - _frameMs[i - 1];
                 if (!(interval > 0 && interval < 1000)) continue;
                 intervals.Add(interval);
-                if (engine is null) continue;
+                if (engine is null || !Compared(ms)) continue;
                 while (stretch < engine.Stretches.Count && engine.Stretches[stretch].ToMs <= ms) stretch++;
                 if (stretch < engine.Stretches.Count && engine.Stretches[stretch] is { } e && ms >= e.FromMs + 2000)
                     (e.Off ? off : on).Add(interval, _waitUs[i] / 1000);
@@ -608,7 +686,7 @@ public static partial class LastFlight
                 cpus.Add(cpu);
                 if (gpu is { } g) gpus.Add(g);
                 if (_loadOwnShare[i] >= 0) { own.Add(_loadOwnShare[i] / 10); whole.Add(_loadGpuShare[i] / 10); }
-                if (engine is null) continue;
+                if (engine is null || !Compared(ms)) continue;
                 while (stretch < engine.Stretches.Count && engine.Stretches[stretch].ToMs <= ms) stretch++;
                 if (stretch < engine.Stretches.Count && engine.Stretches[stretch] is { } e && ms >= e.FromMs + 2000)
                     (e.Off ? off : on).AddLoad(cpu, gpu);
@@ -628,10 +706,10 @@ public static partial class LastFlight
             {
                 var enough = on.Seconds >= 20 && off.Seconds >= 20;
                 comparison = new(engine.Count, Math.Round(on.Seconds), Math.Round(off.Seconds), enough ? on.Frame : null, enough ? off.Frame : null, enough ? on.Wait : null, enough ? off.Wait : null,
-                    enough ? on.Cpu : null, enough ? off.Cpu : null, enough ? on.Gpu : null, enough ? off.Gpu : null);
+                    enough ? on.Cpu : null, enough ? off.Cpu : null, enough ? on.Gpu : null, enough ? off.Gpu : null, leftOut);
             }
             var last = first;
-            for (var s = first; s < _appPerSecond.Count; s++) if (_appPerSecond[s] >= FlyingFps) last = s;
+            for (var s = first; s < _appPerSecond.Count; s++) if (Fly(s)) last = s;
             return (pacing, comparison, load, (first * 1000.0, (last + 1) * 1000.0));
         }
 

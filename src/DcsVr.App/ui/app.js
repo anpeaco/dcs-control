@@ -1087,13 +1087,14 @@ function renderFlight() {
     rows.push(['PC during flight',`CPU ${m.cpuP90 != null ? fmt(m.cpuP90)+'%' : '?'} · GPU ${m.gpuUtilP90 != null ? fmt(m.gpuUtilP90)+'%' : '?'} p90`,[thread, card, others].filter(Boolean).join(' · ') || `${duration(m.seconds)} recorded`,
       m.saturatedShare >= .2 || m.thermalShare >= .05 || Boolean(m.otherGpu)]);
   }
-  // Steady flight (seconds at 90% of the paced rate, 2 s either side too): late frames counted in headset refreshes, the
+  // Steady flight (seconds at 90% of the paced rate, 2 s either side too; a freeze of up to 3 s stays in): late frames counted in headset refreshes, the
   // refreshes the headset got nothing new for, and the tail of DCS's hand-over. The A/B figures in docs/PERF_CHANGES.md.
   const dv = f.delivery;
   if (dv) {
     const unit = dv.headsetPeriodMs != null ? 'headset refresh' : 'frame slot';
     rows.push(['Late frames',`${fmt(dv.latePerMinute,1)} per minute`,dv.lateFrames ? `${fmt(dv.late1)} one ${unit} late, ${fmt(dv.late2)} two, ${fmt(dv.late3Plus)} three or more · ${duration(dv.seconds)} of steady flight` : `none in ${duration(dv.seconds)} of steady flight`,dv.latePerMinute >= 6]);
-    if (dv.missedRefreshes != null) rows.push(['Missed refreshes',`${fmt(dv.missedPerMinute,1)} per minute`,`${fmt(dv.missedRefreshes)} headset refreshes with no new frame${dv.doubledRefreshes ? ` · ${fmt(dv.doubledRefreshes)} with two frames for one refresh` : ''}`,dv.missedPerMinute >= 6]);
+    if (dv.freezes) rows.push(['Freezes',`${fmt(dv.freezes)} over 100 ms`,`${fmt(dv.freezes*60/dv.seconds,1)} per minute · longest ${fmt(dv.longestFrameMs)} ms · counted among the late frames`,true]);
+    if (dv.missedRefreshes != null) rows.push(['Missed refreshes',`${fmt(dv.missedPerMinute,1)} per minute`,`${fmt(dv.missedRefreshes)} headset refreshes with no new frame${dv.doubledRefreshes ? ` · ${fmt(dv.doubledRefreshes)} with two frames for one refresh` : ''}${dv.displayCorrections ? ` · ${fmt(dv.displayCorrections)} display-time corrections by the runtime, not counted` : ''}`,dv.missedPerMinute >= 6]);
     if (dv.endFrameP99Ms != null) rows.push(['Hand-over',`${fmt(dv.endFrameP99Ms,1)} ms p99`,[`DCS's time handing each frame over: p99.9 ${fmt(dv.endFrameP999Ms,1)} ms${dv.endFramesOver30Ms ? `, ${fmt(dv.endFramesOver30Ms)} over 30 ms` : ''}`,
       dv.queueLagP50Ms != null ? `headset queue past each generated frame ${fmt(dv.queueLagP50Ms,1)} ms after it (p90 ${fmt(dv.queueLagP90Ms,1)}), ${share(dv.queueLagOverPeriodShare)} later than one refresh` : null].filter(Boolean).join(' · '),
       dv.endFramesOver30Ms > 0 || dv.queueLagOverPeriodShare >= .25]);
@@ -1106,14 +1107,15 @@ function renderFlight() {
       h.unwrittenAtNextSlot ? `${fmt(h.unwrittenAtNextSlot)} generated frames shown late (an older image in their place)` : null,
       h.stagingWaits ? `${fmt(h.stagingWaits)} waits for a hand-over copy` : null,
       h.displayTimeSteps ? `display time stepped ${h.displayTimeSteps}×` : null, h.clockClamps ? `frame clock pulled back ${h.clockClamps}×` : null,
-      h.unwrittenHandovers ? `${fmt(h.unwrittenHandovers)} generated frames handed over before drawn` : null].filter(Boolean);
-    const events = h.runtimeImagesMade + h.runtimeImagesGivenBack + h.continuityResets + h.unwrittenAtNextSlot + h.displayTimeSteps + h.clockClamps;
+      h.unwrittenHandovers ? `${fmt(h.unwrittenHandovers)} generated frames handed over before drawn` : null,
+      h.runtimeBlocks ? `headset runtime held the frame call over 30 ms ${fmt(h.runtimeBlocks)}×` : null].filter(Boolean);
+    const events = h.runtimeImagesMade + h.runtimeImagesGivenBack + h.continuityResets + h.unwrittenAtNextSlot + h.displayTimeSteps + h.clockClamps + (h.runtimeBlocks ?? 0);
     rows.push(['Hitch signals',events ? `${fmt(events)} in ${duration(h.seconds)}` : 'None',parts.join(' · ') || 'No headset image rebuilds, waits or restarts while flying',
-      h.runtimeImagesGivenBack > 0 || h.inPlaceWaits > h.seconds || h.unwrittenAtNextSlot > 0]);
+      h.runtimeImagesGivenBack > 0 || h.inPlaceWaits > h.seconds || h.unwrittenAtNextSlot > 0 || h.runtimeBlocks > 0]);
   }
   if (c?.gpuPerPairMs != null) rows.push(['Frame generation GPU',`${fmt(c.gpuPerPairMs,2)} ms per frame`,'median GPU time to generate the frames between two DCS frames']);
   if (c?.vramPeakMiB) rows.push(['Video memory',`${gb(c.vramPeakMiB)} peak`,[c.vramBudgetMiB ? `of ${gb(c.vramBudgetMiB)} Windows gave DCS` : null, c.gpuMemoryMiB ? `${gb(c.gpuMemoryMiB)} card` : null].filter(Boolean).join(' · '),c.vramBudgetMiB > 0 && c.vramPeakMiB >= c.vramBudgetMiB*.95]);
-  if (e) rows.push(['Engine switch in flight',e.onFrameMs != null ? `${fmt(e.onWaitMs,1)} ms spare on · ${fmt(e.offWaitMs,1)} off` : `Switched ${e.switches}×`,e.onFrameMs != null ? `frame ${fmt(e.onFrameMs,1)} ms on, ${fmt(e.offFrameMs,1)} ms off${e.onCpuMs != null ? ` · CPU ${fmt(e.onCpuMs,1)} ms on, ${fmt(e.offCpuMs,1)} off` : ''}${e.onGpuMs != null ? ` · GPU ${fmt(e.onGpuMs,1)} ms on, ${fmt(e.offGpuMs,1)} off` : ''} · ${duration(e.onSeconds)} on, ${duration(e.offSeconds)} off; the scene may differ between them` : 'Too short to compare: each side needs 20 s of flight']);
+  if (e) rows.push(['Engine switch in flight',e.onFrameMs != null ? `${fmt(e.onWaitMs,1)} ms spare on · ${fmt(e.offWaitMs,1)} off` : `Switched ${e.switches}×`,e.onFrameMs != null ? `frame ${fmt(e.onFrameMs,1)} ms on, ${fmt(e.offFrameMs,1)} ms off${e.onCpuMs != null ? ` · CPU ${fmt(e.onCpuMs,1)} ms on, ${fmt(e.offCpuMs,1)} off` : ''}${e.onGpuMs != null ? ` · GPU ${fmt(e.onGpuMs,1)} ms on, ${fmt(e.offGpuMs,1)} off` : ''} · ${duration(e.onSeconds)} on, ${duration(e.offSeconds)} off in the same mission load; the scene may differ between them${e.leftOutSeconds ? ` · ${duration(e.leftOutSeconds)} of another mission load left out` : ''}` : 'Too short to compare: each side needs 20 s of flight in the mission load the switch was used in']);
   if (f.dlss5) rows.push(['DLSS 5',f.dlss5.state === 'ran' ? 'Ran' : f.dlss5.state === 'failed' ? 'Failed' : 'Not started',f.dlss5.state === 'failed' ? f.dlss5.error : [f.dlss5.version ? 'runtime '+f.dlss5.version : 'no 3D scene reached', f.dlss5.toggles ? `toggled ${f.dlss5.toggles}×, ${f.dlss5.onAtExit ? 'on' : 'off'} at exit` : null].filter(Boolean).join(' · '),f.dlss5.state === 'failed']);
   if (f.boost) rows.push(['CPU Boost',f.boost.state === 'restored' ? 'Restored' : f.boost.state === 'running' ? 'Running' : f.boost.state,`${f.boost.moved} apps moved, ${f.boost.restored} restored`+(f.boost.errors.length ? ` · ${f.boost.errors.length} need admin rights` : ''),f.boost.errors.length > 0]);
   if (f.prefetch) rows.push(['Terrain prefetch fix',f.prefetch.averageCallsPerSecond ? `${fmt(f.prefetch.skippedPercent,1)}% skipped` : 'No calls',f.prefetch.averageCallsPerSecond ? `${fmt(f.prefetch.averageCallsPerSecond/1000,0)}k calls/s average · ${fmt(f.prefetch.peakCallsPerSecond/1000,0)}k peak` : 'Loaded; DCS made no repeated prefetch calls']);
