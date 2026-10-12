@@ -1,0 +1,99 @@
+diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
+--- a/include/xrfg/implicit_layer.hpp
++++ b/include/xrfg/implicit_layer.hpp
+@@ -201,6 +201,12 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
+ [[nodiscard]] bool read_own_binding_queue(
+     const std::filesystem::path& module_directory) noexcept;
+ 
++// DCS Control (0024). `[ofxr] binding_queue_high_priority`: that queue is
++// created at D3D12_COMMAND_QUEUE_PRIORITY_HIGH, like the bridge's and the
++// synthesis queue. Off unless set to 1. Read once per session.
++[[nodiscard]] bool read_binding_queue_high_priority(
++    const std::filesystem::path& module_directory) noexcept;
++
+ // DCS VR Control (0007). `[ofxr] diag_vram`: the diagnostic panel shows the
+ // GPU's memory ("VRAM 28.4 / 32.0 GB"). Off unless set to 1. Read once per
+ // session.
+diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
+--- a/src/common/implicit_layer.cpp
++++ b/src/common/implicit_layer.cpp
+@@ -459,6 +459,10 @@ bool read_own_binding_queue(const std::filesystem::path& module_directory) noexc
+     return read_ofxr_switch(module_directory, L"own_binding_queue", true);
+ }
+ 
++bool read_binding_queue_high_priority(const std::filesystem::path& module_directory) noexcept {
++    return read_ofxr_switch(module_directory, L"binding_queue_high_priority", false);
++}
++
+ bool read_diag_vram(const std::filesystem::path& module_directory) noexcept {
+     return read_ofxr_switch(module_directory, L"diag_vram", false);
+ }
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -6128,6 +6128,19 @@ XrResult layer_create_session_impl(
+             binding_queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+             binding_queue_description.NodeMask =
+                 state->d3d12_queue->GetDesc().NodeMask;
++            // DCS Control (0024): the runtime judges a frame complete by this
++            // queue's progress. At NORMAL priority beside the HIGH bridge and
++            // synthesis queues, Virtual Desktop's passed each generated
++            // frame's hand-over a median 14.8 ms late in a DCS flight (more
++            // than a 72 Hz period for 58% of them) although synthesis had
++            // finished ~19 ms earlier. Its work is copies, joins and the
++            // runtime's own waits: small, and wanted ahead of the game's.
++            // Capability bit 512.
++            const bool binding_queue_high = xrfg::implicit_layer::
++                read_binding_queue_high_priority(current_layer_directory());
++            if (binding_queue_high) {
++                binding_queue_description.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
++            }
+             Microsoft::WRL::ComPtr<ID3D12CommandQueue> binding_queue;
+             Microsoft::WRL::ComPtr<ID3D12Fence> release_fence;
+             Microsoft::WRL::ComPtr<ID3D12Fence> reacquire_fence;
+@@ -6150,6 +6163,9 @@ XrResult layer_create_session_impl(
+                 state->app_release_fence = std::move(release_fence);
+                 state->reacquire_fence = std::move(reacquire_fence);
+                 state->graphics_binding_capabilities |= 16ULL;
++                if (binding_queue_high) {
++                    state->graphics_binding_capabilities |= 512ULL; // 0024
++                }
+             }
+         }
+     }
+diff --git a/tests/ofxr_bridge_d3d11_bridge_logging.ini b/tests/ofxr_bridge_d3d11_bridge_logging.ini
+--- a/tests/ofxr_bridge_d3d11_bridge_logging.ini
++++ b/tests/ofxr_bridge_d3d11_bridge_logging.ini
+@@ -9,6 +9,7 @@ nvidia_bidirectional=0
+ deep_pipeline=1
+ vulkan_bridge=0
+ d3d11_bridge=1
++binding_queue_high_priority=1
+ lazy_runtime_reclaim_ms=200
+ 
+ [diagnostics]
+diff --git a/tests/standalone_launcher_tests.cpp b/tests/standalone_launcher_tests.cpp
+--- a/tests/standalone_launcher_tests.cpp
++++ b/tests/standalone_launcher_tests.cpp
+@@ -308,6 +308,21 @@ int main() {
+         std::cerr << "lazy_runtime_reclaim_ms parsing failed\n";
+         return 1;
+     }
++    // DCS Control (0024): binding_queue_high_priority, off unless 1.
++    bool priority_parsed = true;
++    for (const auto& [text, expected] : std::initializer_list<std::pair<const char*, bool>>{
++             {"binding_queue_high_priority=1\n", true}, {"binding_queue_high_priority=0\n", false}, {"", false}}) {
++        {
++            std::ofstream ini(backend_directory / L"ofxr_bridge.ini", std::ios::trunc);
++            ini << "[ofxr]\n" << text;
++        }
++        priority_parsed = priority_parsed &&
++            xrfg::implicit_layer::read_binding_queue_high_priority(backend_directory) == expected;
++    }
++    if (!priority_parsed) {
++        std::cerr << "binding_queue_high_priority parsing failed\n";
++        return 1;
++    }
+     std::error_code cleanup_error;
+     std::filesystem::remove_all(backend_directory, cleanup_error);
+     if (!backend_from_ini || !preset_round_trips ||

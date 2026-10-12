@@ -173,6 +173,10 @@ public sealed record VrProfile
     /// the runtime's, so DCS's next frame is less often held on the GPU behind frame generation still reading the image
     /// it writes (counted as d3d11_bridge result=15 in OFXR's log).</summary>
     public bool OfxrInPlaceSpareImage { get; init; } = true;
+    /// <summary>binding_queue_high_priority (fork patch 0024): the queue the headset runtime judges frames by (OFXR's own,
+    /// with own_binding_queue) at HIGH priority like OFXR's other queues. At NORMAL, Virtual Desktop's passed each generated
+    /// frame a median 14.8 ms after its hand-over in a DCS flight.</summary>
+    public bool OfxrHighPriorityQueue { get; init; } = true;
     public FpsLimitMode FpsLimit { get; init; }
     public double HeadsetRefreshHz { get; init; } = 90;
     /// <summary>The refresh rate is read from the headset software (<see cref="HeadsetRefresh"/>) whenever it can be;

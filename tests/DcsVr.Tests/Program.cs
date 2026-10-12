@@ -3,6 +3,8 @@ using System.IO.Compression;
 using System.Text;
 using DcsVr.Core;
 
+// Diagnostics: Last flight's reading of one OFXR flight log, as JSON (no tests run).
+if (args.FirstOrDefault() == "--parse-ofxr" && args.Length > 1) { Console.WriteLine(JsonData.Serialize(LastFlight.ParseOfxr(File.ReadLines(args[1])))); return 0; }
 if (args.FirstOrDefault() == "--environment-child") { Console.Write(Environment.GetEnvironmentVariable("XR_RUNTIME_JSON") + "|" + Environment.GetEnvironmentVariable("XR_ENABLE_API_LAYERS")); return 0; }
 var workspace = Path.GetFullPath(args.FirstOrDefault() ?? ".");
 if (!File.Exists(Path.Combine(workspace, "Directory.Build.props"))) { Console.Error.WriteLine("Run from the repository root, or pass it as the first argument: " + workspace); return 2; }
@@ -602,6 +604,40 @@ Test("Last flight: dcs.log session, Pimax frames, OFXR modes and frame time, DLS
     var other = LastFlight.Read(new(dcsLog, null, Path.Combine(flight, "managed/profiles"), status, bin))!;
     Require(other.Boost is null && other.Dlss5 is null && other.Headset is null && other.DcsPid == 24208);
 });
+Test("Last flight: late frames in headset refreshes, missed and doubled refreshes, hand-over tail and queue lag over steady flight", () =>
+{
+    // DCS at 30 FPS (33.3 ms slot, 2 refreshes of a 60 Hz headset) from 10 s: two frames 2 refreshes late, one 1 late,
+    // one 40 ms hand-over; the headset's submissions skip 2 refreshes once and repeat one once; the queue passes 1 in 5
+    // generated frames 20 ms after its hand-over, the others after 5 ms.
+    var lines = new List<string> { "seq=1 ms=0.000 tid=1 phase=I op=logger result=401 dur_us=0 a=256 b=0 c=4242" };
+    var ms = 10000.0;
+    for (var i = 0; i < 1800; i++)
+    {
+        ms += i == 0 ? 0 : i is 600 or 900 ? 200.0 / 3 : i == 1200 ? 50 : 100.0 / 3;
+        lines.Add(FormattableString.Invariant($"seq=3 ms={ms:F3} tid=1 phase=E op=app_wait_frame result=0 dur_us=5000 a=1 b=33333333 c=1"));
+        lines.Add(FormattableString.Invariant($"seq=4 ms={ms + 10:F3} tid=1 phase=E op=app_end_frame result=0 dur_us={(i == 700 ? 40000 : 5000)} a=1 b=1 c=1"));
+    }
+    var display = 1_000_000_000_000UL;
+    for (var k = 0; k < 3600; k++)
+    {
+        display += k == 0 ? 0 : k == 1000 ? 50_000_001UL : k == 2000 ? 0 : 16_666_667UL;
+        var at = 10000 + k * 50.0 / 3;
+        lines.Add(FormattableString.Invariant($"seq=5 ms={at:F3} tid=2 phase=E op=internal_end_frame result=0 dur_us=50 a={display} b=1 c=1"));
+        if (k % 2 == 0)
+        {
+            lines.Add(FormattableString.Invariant($"seq=6 ms={at:F3} tid=2 phase=I op=presenter_vsync_lock result=916 dur_us=0 a={k + 1} b={k} c=2"));
+            lines.Add(FormattableString.Invariant($"seq=7 ms={at + (k % 10 == 0 ? 20 : 5):F3} tid=3 phase=I op=presenter_vsync_lock result=914 dur_us=0 a={k + 1} b=0 c=0"));
+        }
+    }
+    var delivery = LastFlight.ParseOfxr(lines)!.Delivery;
+    Require(delivery is { HeadsetPeriodMs: 16.67, LateFrames: 3, Late1: 1, Late2: 2, Late3Plus: 0, MissedRefreshes: 2, DoubledRefreshes: 1, EndFramesOver30Ms: 1, EndFrameP99Ms: 5,
+        QueueLagP50Ms: 5, QueueLagP90Ms: 20, QueueLagOverPeriodShare: .2, RealQueueLagP50Ms: null } d && d.Seconds is > 50 and < 60 && d.LatePerMinute == Math.Round(3 * 60.0 / d.Seconds, 1),
+        JsonData.Serialize(delivery));
+    // Without display times (or with ones that do not divide the slot), late frames are counted in whole slots and no
+    // refreshes are judged.
+    var slots = LastFlight.ParseOfxr(lines.Where(l => !l.Contains("internal_end_frame")))!.Delivery;
+    Require(slots is { HeadsetPeriodMs: null, MissedRefreshes: null, LateFrames: 3, Late1: 3 }, JsonData.Serialize(slots));
+});
 Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, what limits it, and the switch's CPU and GPU", () =>
 {
     // 60 flying seconds at 30 FPS: OFXR gave DCS a 33.3 ms slot.
@@ -639,8 +675,9 @@ Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, wha
         "seq=9 ms=40000.000 tid=1 phase=I op=continuity_reset result=0 dur_us=0 a=1 b=0 c=0",
         "seq=9 ms=41000.000 tid=2 phase=I op=presenter_transition result=402 dur_us=0 a=1 b=0 c=0",
         "seq=9 ms=41010.000 tid=2 phase=I op=presenter_transition result=403 dur_us=0 a=1 b=0 c=0"]);
-    Require(LastFlight.ParseOfxr(hitchLines)!.Hitches is { Seconds: 60, RuntimeImagesMade: 1, RuntimeImagesGivenBack: 1, InPlaceWaits: 2, ContinuityResets: 1, UnwrittenHandovers: 1 },
-        "hitch signals over the flying seconds");
+    // Steady seconds: 10-69 s run at 30 FPS; the 2 s at each end are edges (56 s).
+    Require(LastFlight.ParseOfxr(hitchLines)!.Hitches is { Seconds: 56, RuntimeImagesMade: 1, RuntimeImagesGivenBack: 1, InPlaceWaits: 2, ContinuityResets: 1, UnwrittenHandovers: 1 },
+        "hitch signals over the steady seconds");
     Require(spare.Hitches is { RuntimeImagesMade: 0, RuntimeImagesGivenBack: 0, InPlaceWaits: 0, ContinuityResets: 0, UnwrittenHandovers: 0 }, "none logged");
     // The engine switch at 45 s: CPU 20 ms with the optimizations on, 15 ms off.
     var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
@@ -2423,6 +2460,28 @@ Test("Launch applies a draft when nothing is applied, then changes nothing while
     Require(f.Service.RestoreOriginals().Complete && File.ReadAllText(f.Options) == Lua);
     Throws<InvalidOperationException>(() => f.Service.SyncApplied(null, f.Inventory)); // the CLI has nothing to launch
 });
+Test("Launch applies again when this version would write a component differently, though the profile is unchanged", () =>
+{
+    var f = SyncFixture("component");
+    var draft = new VrProfile { FpsLimit = FpsLimitMode.Custom, RenderedFpsCap = 60 };
+    var first = f.Service.SyncApplied(draft, f.Inventory);
+    // An install from an older build: launch.json with a setting this build no longer writes, recorded as installed (so
+    // nothing looks tampered).
+    var baselinePath = Path.Combine(f.Service.Originals.Directory, "baseline.json");
+    var baseline = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(baselinePath))!;
+    var owned = baseline["current"]!["entries"]!.AsArray().First(e => Path.GetFileName(e!["path"]!.GetValue<string>()).Equals("launch.json", StringComparison.OrdinalIgnoreCase))!;
+    var ownedPath = owned["path"]!.GetValue<string>();
+    var launch = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(ownedPath))!;
+    launch["environment"]!["DCSVR_OLDER_BUILD"] = "1";
+    File.WriteAllText(ownedPath, launch.ToJsonString());
+    owned["installedSha256"] = Hashing.FileSha256(ownedPath);
+    File.WriteAllText(baselinePath, baseline.ToJsonString());
+    var again = f.Service.SyncApplied(draft, f.Inventory);
+    Require(again.Kind == LaunchSyncKind.Applied && again.Message.Contains("writes launch.json differently"), again.Message);
+    Require(!File.ReadAllText(ownedPath).Contains("DCSVR_OLDER_BUILD"), "the current build's file is installed");
+    Require(f.Service.SyncApplied(draft, f.Inventory).Kind == LaunchSyncKind.Unchanged, "then nothing to do");
+    Require(first.Kind == LaunchSyncKind.Applied && f.Service.RestoreOriginals().Complete);
+});
 Test("Launch after a change writes the draft over the applied profile and checks the launch contract", () =>
 {
     var f = SyncFixture("changed");
@@ -3019,20 +3078,20 @@ Test("Quest 3 needs VDXR; another route's runtime is never used instead", () =>
 Test("Advanced OFXR settings: every key exists in the layer, defaults are the layer's, and the FPS counter takes any corner", () =>
 {
     var ini = ConfigurationWriters.Ofxr(new() { FrameGen = FrameGeneration.Nvidia });
-    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "single_swapchain_rings=1", "capture_at_end_frame=1", "lazy_runtime_reclaim_ms=0", "in_place_spare_image=1", "position=off" })
+    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "single_swapchain_rings=1", "capture_at_end_frame=1", "lazy_runtime_reclaim_ms=0", "in_place_spare_image=1", "binding_queue_high_priority=1", "position=off" })
         Require(ini.Contains(expected), expected);
     var source = File.ReadAllText(Path.Combine(workspace, "external/ofxr-djules75/src/common/implicit_layer.cpp"));
     foreach (var key in ini.Split('\n').Select(l => l.Trim()).Where(l => l.Contains('=') && !l.StartsWith('[')).Select(l => l.Split('=')[0]).Except(["max_file_mb", "flush_each_event", "logging_enabled", "position", "enabled", "motion_vectors"]))
         Require(source.Contains("L\"" + key + "\"", StringComparison.Ordinal), key + " is read by OFXR");
-    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, OfxrSingleRings = false, OfxrCaptureAtEndFrame = false, OfxrKeepRuntimeImages = false, OfxrInPlaceSpareImage = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
+    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, OfxrSingleRings = false, OfxrCaptureAtEndFrame = false, OfxrKeepRuntimeImages = false, OfxrInPlaceSpareImage = false, OfxrHighPriorityQueue = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
     var written = ConfigurationWriters.Ofxr(tuned);
-    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "single_swapchain_rings=0", "capture_at_end_frame=0", "lazy_runtime_reclaim_ms=5000", "in_place_spare_image=0", "position=lower_left" })
+    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "single_swapchain_rings=0", "capture_at_end_frame=0", "lazy_runtime_reclaim_ms=5000", "in_place_spare_image=0", "binding_queue_high_priority=0", "position=lower_left" })
         Require(written.Contains(expected), expected);
     foreach (var (corner, value) in new[] { (OverlayCorner.UpperRight, "upper_right"), (OverlayCorner.UpperLeft, "upper_left"), (OverlayCorner.LowerRight, "lower_right") })
         Require(ConfigurationWriters.Ofxr(tuned with { OverlayPosition = corner }).Contains("position=" + value), value);
     Require(JsonData.Deserialize<VrProfile>(JsonData.Serialize(tuned)) == tuned);
     var older = System.Text.Json.Nodes.JsonNode.Parse(JsonData.Serialize(new VrProfile()))!.AsObject();
-    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains", "ofxrSingleRings", "ofxrCaptureAtEndFrame", "ofxrKeepRuntimeImages", "ofxrInPlaceSpareImage" }) Require(older.Remove(name), name);
+    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains", "ofxrSingleRings", "ofxrCaptureAtEndFrame", "ofxrKeepRuntimeImages", "ofxrInPlaceSpareImage", "ofxrHighPriorityQueue" }) Require(older.Remove(name), name);
     Require(JsonData.Deserialize<VrProfile>(older.ToJsonString()) == new VrProfile(), "a profile saved before these settings loads with the layer's defaults");
     Require(ProfileValidation.Validate(new() { OverlayPosition = (OverlayCorner)9 }).Any(i => i.Code == "overlay-position"));
 });

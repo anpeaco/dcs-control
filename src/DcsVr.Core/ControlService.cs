@@ -367,6 +367,26 @@ public sealed class ControlService(string distributionRoot, string stateRoot)
         catch (Exception e) when (e is IOException or System.Text.Json.JsonException or UnauthorizedAccessException or InvalidDataException) { return null; }
     }
 
+    /// <summary>The first file <paramref name="plan"/> would write differently from what <paramref name="journal"/> installed:
+    /// bytes for a file DCS Control owns whole, the owned values for an ini it shares; options.lua's values are checked by
+    /// VerifyInstalled. Null when this build would write exactly what is installed.</summary>
+    internal static string? StaleComponent(ApplyPlan plan, TransactionJournal journal)
+    {
+        var installed = new Dictionary<string, JournalEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in journal.Entries.Where(e => !e.Deleted)) installed[Path.GetFullPath(entry.Path)] = entry;
+        static bool SameValues(IReadOnlyDictionary<string, string> a, IReadOnlyDictionary<string, string>? b) =>
+            b is not null && a.Count == b.Count && a.All(pair => b.TryGetValue(pair.Key, out var value) && value == pair.Value);
+        foreach (var file in plan.Files)
+        {
+            // profile.json carries the profile's name, which SameDraft leaves out: not a component.
+            if (file.Delete || file.LuaChanges is not null || Path.GetFileName(file.Path).Equals("profile.json", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!installed.TryGetValue(Path.GetFullPath(file.Path), out var entry)) return file.Path;
+            if (file.IniValues is { Count: > 0 } values ? !SameValues(values, entry.IniValues) : Hashing.BytesSha256(file.Content) != entry.InstalledSha256)
+                return file.Path;
+        }
+        return null;
+    }
+
     /// <summary>Same settings as the applied draft: id and name only follow the features, as in the interface.</summary>
     public static bool SameDraft(VrProfile draft, VrProfile applied) =>
         JsonData.Serialize(draft with { Id = "", Name = "" }) == JsonData.Serialize(applied with { Id = "", Name = "" });
@@ -388,6 +408,7 @@ public sealed class ControlService(string distributionRoot, string stateRoot)
         // Every file involved: everything DCS Control wrote, the selected DCS install and options, the managed folder.
         EnsureDcsClosed(baseline.Files.Select(f => f.Path).Concat(new[] { inventory.DcsExecutable, inventory.OptionsPath, ManagedRoot }.OfType<string>()), ManagedRoot);
         string? reason = null;
+        ApplyPlan? preview = null;
         if (applied is not null && SameDraft(draft, applied.Profile) && SamePaths(inventory, applied))
         {
             if (!TryUpdatePimaxFovea(applied, out var fovea)) reason = "Pimax Play's focus values could not be updated in place";
@@ -398,7 +419,13 @@ public sealed class ControlService(string distributionRoot, string stateRoot)
                 try
                 {
                     VerifyInstalled(journal);
-                    return new(fovea is null ? LaunchSyncKind.Unchanged : LaunchSyncKind.FoveaUpdated, fovea ?? "The applied profile is up to date.", journal);
+                    // The installed files are what was applied; whether they are what this version of DCS Control would
+                    // write is a separate question: a new OFXR build, engine payload or ini key ships with an update while
+                    // the profile stays the same.
+                    preview = Preview(draft, inventory);
+                    if (StaleComponent(preview, journal) is not { } stale)
+                        return new(fovea is null ? LaunchSyncKind.Unchanged : LaunchSyncKind.FoveaUpdated, fovea ?? "The applied profile is up to date.", journal);
+                    reason = "this version of DCS Control writes " + Path.GetFileName(stale) + " differently";
                 }
                 catch (IOException e)
                 {
@@ -419,7 +446,7 @@ public sealed class ControlService(string distributionRoot, string stateRoot)
                 }
             }
         }
-        var plan = Preview(draft, inventory);
+        var plan = preview ?? Preview(draft, inventory);
         var result = Apply(plan);
         var replacedProfile = applied?.Journal.ProfileId ?? baseline.Current?.ProfileId;
         // Pilots read the profile's name; the id stays in LaunchSync for the report's "Written over" line and tests.

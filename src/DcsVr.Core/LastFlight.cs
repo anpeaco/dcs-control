@@ -18,7 +18,7 @@ public sealed record FlightSources(string? DcsLog, string? PimaxLogDirectory = n
 public sealed record FlightSummary(DateTimeOffset Start, DateTimeOffset End, bool Closed, int? DcsPid, HeadsetFrames? Headset, FramegenShare? Framegen,
     FrameTimes? FrameTime, NeuralState? Dlss5, BoostResult? Boost, PrefetchResult? Prefetch,
     FrameCadence? Pacing = null, FramegenCost? FramegenCost = null, EngineComparison? EngineSwitch = null, FrameLoad? Load = null, MachineLoad? Machine = null,
-    HitchSignals? Hitches = null)
+    HitchSignals? Hitches = null, FrameDelivery? Delivery = null)
 {
     public TimeSpan Duration => End - Start;
 }
@@ -87,8 +87,8 @@ public sealed record FrameLoad(double CpuP50Ms, double CpuP90Ms, double CpuP99Ms
     public static string Classify(double cpuP90, double? gpuP90, double slot) =>
         gpuP90 is { } g && g >= LimitShare * slot ? "gpu" : cpuP90 >= LimitShare * slot ? "cpu" : "headroom";
 }
-/// <summary>Events in OFXR's log that hold a frame up, over the flying seconds: the checks for the stutter fixes in
-/// docs/PERF_CHANGES.md.</summary>
+/// <summary>Events in OFXR's log that hold a frame up, over the steady seconds (<see cref="FrameDelivery"/>): the checks
+/// for the stutter fixes in docs/PERF_CHANGES.md.</summary>
 /// <param name="RuntimeImagesMade">d3d11_bridge result=9: a runtime swapchain for DCS's images made on DCS's frame
 /// thread (once per swapchain at most with fork patch 0020's "Keep headset images once made").</param>
 /// <param name="RuntimeImagesGivenBack">d3d11_bridge result=10: one destroyed after 5 s unused (none with 0020).</param>
@@ -98,8 +98,29 @@ public sealed record FrameLoad(double CpuP50Ms, double CpuP90Ms, double CpuP99Ms
 /// generated frames).</param>
 /// <param name="UnwrittenHandovers">presenter_transition result=402: a generated frame handed to the runtime before
 /// it was drawn.</param>
+/// <param name="UnwrittenAtNextSlot">result=406 (fork patch 0025): one of those still unwritten a slot later, so the
+/// headset showed an older image in its place.</param>
+/// <param name="StagingWaits">result=705 (fork patch 0023): generation waited on the GPU for the hand-over copy of the
+/// texture it was about to write.</param>
+/// <param name="DisplayTimeSteps">display_time_correction: DCS's predicted display time moved by a whole period.</param>
+/// <param name="ClockClamps">virtual_clock_clamp: OFXR's frame clock pulled back into line.</param>
 public sealed record HitchSignals(int Seconds, int RuntimeImagesMade, int RuntimeImagesGivenBack, int InPlaceWaits, int ContinuityResets,
-    int UnwrittenHandovers);
+    int UnwrittenHandovers, int UnwrittenAtNextSlot = 0, int StagingWaits = 0, int DisplayTimeSteps = 0, int ClockClamps = 0);
+/// <summary>How DCS's frames reached the headset over the steady seconds: seconds at 90% or more of the frame rate OFXR
+/// paced DCS to, with the 2 s either side as well (so pauses, loading screens and their edges are left out). Counted in
+/// headset refresh periods, the steps frame times fall into, rather than against a multiple of the median.</summary>
+/// <param name="HeadsetPeriodMs">The headset's refresh period, from the display times OFXR submitted (null: not in the
+/// log; late frames are then counted in whole frame slots).</param>
+/// <param name="LateFrames">DCS frames that came one or more headset periods after their slot; split by how far.</param>
+/// <param name="MissedRefreshes">Headset refreshes OFXR submitted nothing new for (the display time stepped by more
+/// than one period); <paramref name="DoubledRefreshes"/>: two submissions for the same refresh.</param>
+/// <param name="EndFrameP99Ms">DCS's time in xrEndFrame (handing its frame over), tail percentiles and the count over
+/// 30 ms.</param>
+/// <param name="QueueLagP50Ms">How long after each generated frame's hand-over the headset runtime's queue got past it
+/// (OFXR's join probe, log on); <paramref name="QueueLagOverPeriodShare"/>: the share later than one refresh.</param>
+public sealed record FrameDelivery(int Seconds, double? HeadsetPeriodMs, int LateFrames, int Late1, int Late2, int Late3Plus, double LatePerMinute,
+    int? MissedRefreshes, int? DoubledRefreshes, double? MissedPerMinute, double? EndFrameP99Ms, double? EndFrameP999Ms, int EndFramesOver30Ms,
+    double? QueueLagP50Ms, double? QueueLagP90Ms, double? QueueLagOverPeriodShare, double? RealQueueLagP50Ms);
 /// <summary>What the PC did during the flight, from the flight helper's once-a-second record (<see cref="FlightMonitor"/>),
 /// over the flying seconds when OFXR's log gives them.</summary>
 /// <param name="CpuP90">The whole CPU's use, p90 of the seconds, percent.</param>
@@ -127,6 +148,21 @@ public static partial class LastFlight
     private const long MaxTail = 64L * 1024 * 1024;
 
     /// <summary>The last session, or null when dcs.log is missing or unreadable (no flight recorded yet).</summary>
+    /// <summary>Keeps <paramref name="flight"/> as flight-YYYYMMDD-HHMMSS.json in <paramref name="folder"/> (once per flight,
+    /// with the profile that flew it), for comparing flights later; the newest <paramref name="keep"/> are kept.</summary>
+    public static void Keep(FlightSummary flight, string folder, VrProfile? profile, int keep = 50)
+    {
+        try
+        {
+            Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, "flight-" + flight.Start.LocalDateTime.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".json");
+            if (!File.Exists(path)) AtomicFile.WriteText(path, JsonData.Serialize(new { schemaVersion = 1, version = ProductInfo.Version, flight, profile }));
+            foreach (var old in new DirectoryInfo(folder).GetFiles("flight-*.json").OrderByDescending(f => f.Name, StringComparer.Ordinal).Skip(keep))
+                old.Delete();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
     public static FlightSummary? Read(FlightSources sources)
     {
         if (sources.DcsLog is not { } log || Session(log) is not { } session) return null;
@@ -145,7 +181,7 @@ public static partial class LastFlight
             boost?.Result,
             ReadPrefetch(PrefetchLog(log), start, end),
             ofxr?.Pacing, ofxr?.Cost, ofxr?.Engine, ofxr?.Load,
-            ReadFlightMonitor(sources.BoostStatus, pid, start, end, flying), ofxr?.Hitches);
+            ReadFlightMonitor(sources.BoostStatus, pid, start, end, flying), ofxr?.Hitches, ofxr?.Delivery);
     }
 
     // ---- dcs.log ---------------------------------------------------------------------------------------------------
@@ -259,7 +295,7 @@ public static partial class LastFlight
 
     /// <param name="FlyingFromMs">The flying seconds' span on OFXR's log timeline (milliseconds since it started).</param>
     public sealed record OfxrResult(FramegenShare? Share, FrameTimes? Times, FrameCadence? Pacing = null, FramegenCost? Cost = null, EngineComparison? Engine = null,
-        FrameLoad? Load = null, double? FlyingFromMs = null, double? FlyingToMs = null, HitchSignals? Hitches = null);
+        FrameLoad? Load = null, double? FlyingFromMs = null, double? FlyingToMs = null, HitchSignals? Hitches = null, FrameDelivery? Delivery = null);
 
     /// <summary>One streaming pass over OFXR's flight log, cached by size and timestamp; the engine switches come from
     /// another file and are applied to the cached frames each time.</summary>
@@ -299,7 +335,13 @@ public static partial class LastFlight
         private readonly List<double> _loadMs = [], _loadCpuUs = [], _loadGpuUs = [], _loadOwnShare = [], _loadGpuShare = [];
         private long _vramPeak; private int? _vramBudget, _gpuMemory;
         // HitchSignals: when each happened (ms on the log's timeline).
-        private readonly List<double> _made = [], _givenBack = [], _inPlaceWaits = [], _resets = [], _unwritten = [];
+        private readonly List<double> _made = [], _givenBack = [], _inPlaceWaits = [], _resets = [], _unwritten = [], _unwrittenAtSlot = [],
+            _stagingWaits = [], _displaySteps = [], _clamps = [];
+        // FrameDelivery: each submission to the runtime (ms, display time in ns), and the join probe's marks (916: value ->
+        // ms and kind 2 generated / 1 real) with the lags once their 914 arrives (ms of the mark, lag ms, generated).
+        private readonly List<(double Ms, ulong DisplayNs)> _submissions = [];
+        private readonly Dictionary<ulong, (double Ms, bool Generated)> _probeMarks = [];
+        private readonly List<(double Ms, double LagMs, bool Generated)> _queueLags = [];
         /// <summary>DCS frames in a second for it to count as flying (loading screens and menus run far slower).</summary>
         private const int FlyingFps = 10;
 
@@ -335,7 +377,25 @@ public static partial class LastFlight
                     if (Ended(line) && Real(line, " ms=") is { } endMs && Whole(line, " dur_us=") is { } end) { _endMs.Add(endMs); _endUs.Add(end); }
                     return;
                 case "internal_end_frame":
-                    if (Ended(line) && Real(line, " ms=") is { } outMs) Count(_outPerSecond, outMs);
+                    if (Ended(line) && Real(line, " ms=") is { } outMs)
+                    {
+                        Count(_outPerSecond, outMs);
+                        if (Whole(line, " a=") is { } displayNs) _submissions.Add((outMs, displayNs));
+                    }
+                    return;
+                case "presenter_vsync_lock":
+                    if (Field(line, " result=", out var probe) && Whole(line, " a=") is { } value && Real(line, " ms=") is { } probeMs)
+                    {
+                        if (probe is "916" && Whole(line, " c=") is { } probeKind and (1 or 2)) _probeMarks[value] = (probeMs, probeKind == 2);
+                        else if (probe is "914" && _probeMarks.Remove(value, out var mark) && probeMs >= mark.Ms)
+                            _queueLags.Add((mark.Ms, probeMs - mark.Ms, mark.Generated));
+                    }
+                    return;
+                case "display_time_correction":
+                    if (Real(line, " ms=") is { } stepMs) _displaySteps.Add(stepMs);
+                    return;
+                case "virtual_clock_clamp":
+                    if (Real(line, " ms=") is { } clampMs) _clamps.Add(clampMs);
                     return;
                 case "nvidia_gpu_total":
                     if (Field(line, " result=", out var ok) && ok is "0" && Whole(line, " dur_us=") is { } gpu and > 0 and < 1_000_000) _gpuUs.Add(gpu);
@@ -361,7 +421,12 @@ public static partial class LastFlight
                     if (Real(line, " ms=") is { } resetMs) _resets.Add(resetMs);
                     return;
                 case "presenter_transition":
-                    if (Field(line, " result=", out var transition) && transition is "402" && Real(line, " ms=") is { } transitionMs) _unwritten.Add(transitionMs);
+                    if (Field(line, " result=", out var transition) && Real(line, " ms=") is { } transitionMs)
+                    {
+                        if (transition is "402") _unwritten.Add(transitionMs);
+                        else if (transition is "406") _unwrittenAtSlot.Add(transitionMs);
+                        else if (transition is "705") _stagingWaits.Add(transitionMs);
+                    }
                     return;
                 case "vram_status":
                     if (Field(line, " result=", out var kind) && kind is "1" && Whole(line, " a=") is { } a && Whole(line, " b=") is { } b
@@ -397,15 +462,77 @@ public static partial class LastFlight
             var times = latency.Count == 0 ? null : new FrameTimes(Percentile(latency, .5), Percentile(latency, .9), latency.Count);
             var (pacing, comparison, load, flying) = Pacing(engine);
             HitchSignals? hitches = null;
-            if (flying is { } span && pacing is not null)
+            FrameDelivery? delivery = null;
+            if (pacing is not null && Steady(pacing.TargetFps ?? pacing.RenderedFps) is { } steady && steady.Count(s => s) is var seconds and > 0)
             {
-                int In(List<double> times) => times.Count(ms => ms >= span.From && ms < span.To);
-                hitches = new(pacing.Seconds, In(_made), In(_givenBack), In(_inPlaceWaits), In(_resets), In(_unwritten));
+                bool In(double ms) => ms >= 0 && (int)(ms / 1000) is var s && s < steady.Length && steady[s];
+                int Within(List<double> times) => times.Count(In);
+                hitches = new(seconds, Within(_made), Within(_givenBack), Within(_inPlaceWaits), Within(_resets), Within(_unwritten), Within(_unwrittenAtSlot),
+                    Within(_stagingWaits), Within(_displaySteps), Within(_clamps));
+                delivery = Delivery(seconds, In, pacing.TargetFps is { } target ? 1000 / target : pacing.IntervalP50Ms);
             }
             var gpu = _gpuUs.Order().ToList();
             var cost = gpu.Count == 0 && _vramPeak == 0 ? null
                 : new FramegenCost(gpu.Count == 0 ? null : Math.Round(Quantile(gpu, .5) / 1000, 2), _vramPeak == 0 ? null : (int)Math.Min(_vramPeak, int.MaxValue), _vramBudget, _gpuMemory);
-            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To, hitches);
+            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To, hitches, delivery);
+        }
+
+        /// <summary>Per second: at 90% or more of <paramref name="targetFps"/>, and so were the 2 seconds either side.</summary>
+        private bool[]? Steady(double targetFps)
+        {
+            if (targetFps <= 0 || _appPerSecond.Count == 0) return null;
+            var threshold = 0.9 * targetFps;
+            bool Ok(int s) => s >= 0 && s < _appPerSecond.Count && _appPerSecond[s] >= threshold;
+            var steady = new bool[_appPerSecond.Count];
+            for (var s = 0; s < steady.Length; s++) steady[s] = Ok(s - 2) && Ok(s - 1) && Ok(s) && Ok(s + 1) && Ok(s + 2);
+            return steady;
+        }
+
+        private FrameDelivery Delivery(int seconds, Func<double, bool> steady, double slotMs)
+        {
+            // The headset's period: the median step between consecutive display times OFXR submitted.
+            var steps = new List<double>();
+            for (var i = 1; i < _submissions.Count; i++)
+                if (_submissions[i].DisplayNs > _submissions[i - 1].DisplayNs && _submissions[i].DisplayNs - _submissions[i - 1].DisplayNs < 1_000_000_000UL)
+                    steps.Add((_submissions[i].DisplayNs - _submissions[i - 1].DisplayNs) / 1e6);
+            steps.Sort();
+            double? period = steps.Count < 10 ? null : Quantile(steps, .5);
+            // A period that does not divide the slot (a fixture, a log from another runtime) is not trusted.
+            if (period is { } p && (p <= 0 || Math.Abs(slotMs / p - Math.Round(slotMs / p)) > .1)) period = null;
+            var unit = period ?? slotMs;
+            var slotUnits = Math.Max(1, (int)Math.Round(slotMs / unit));
+            int late1 = 0, late2 = 0, late3 = 0;
+            for (var i = 1; i < _frameMs.Count; i++)
+            {
+                if (!steady(_frameMs[i]) || !steady(_frameMs[i - 1])) continue;
+                var behind = (int)Math.Round((_frameMs[i] - _frameMs[i - 1]) / unit) - slotUnits;
+                if (behind == 1) late1++; else if (behind == 2) late2++; else if (behind >= 3) late3++;
+            }
+            int? missed = null, doubled = null;
+            if (period is { } headset)
+            {
+                missed = 0; doubled = 0;
+                for (var i = 1; i < _submissions.Count; i++)
+                {
+                    var (ms, display) = _submissions[i];
+                    var (previousMs, previousDisplay) = _submissions[i - 1];
+                    if (!steady(ms) || !steady(previousMs) || ms - previousMs > 1000) continue;
+                    var step = (int)Math.Round(((double)display - previousDisplay) / 1e6 / headset);
+                    if (step == 0) doubled++; else if (step > 1) missed += step - 1;
+                }
+            }
+            var ends = new List<double>();
+            for (var i = 0; i < _endMs.Count; i++) if (steady(_endMs[i])) ends.Add(_endUs[i] / 1000);
+            ends.Sort();
+            var lags = _queueLags.Where(l => l.Generated && steady(l.Ms)).Select(l => l.LagMs).Order().ToList();
+            var real = _queueLags.Where(l => !l.Generated && steady(l.Ms)).Select(l => l.LagMs).Order().ToList();
+            var late = late1 + late2 + late3;
+            return new(seconds, period is { } q ? Math.Round(q, 2) : null, late, late1, late2, late3, Math.Round(late * 60.0 / seconds, 1),
+                missed, doubled, missed is { } m ? Math.Round(m * 60.0 / seconds, 1) : null,
+                ends.Count == 0 ? null : Percentile(ends, .99), ends.Count == 0 ? null : Percentile(ends, .999), ends.Count(e => e > 30),
+                lags.Count == 0 ? null : Percentile(lags, .5), lags.Count == 0 ? null : Percentile(lags, .9),
+                lags.Count == 0 ? null : Math.Round((double)lags.Count(l => l > (period ?? slotMs / 2)) / lags.Count, 3),
+                real.Count == 0 ? null : Percentile(real, .5));
         }
 
         private (FrameCadence?, EngineComparison?, FrameLoad?, (double From, double To)?) Pacing(EngineSwitches? engine)

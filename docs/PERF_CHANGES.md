@@ -33,6 +33,11 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` (8e10a49) | CPU Boost → **Record CPU and GPU use** off to compare | Not flown |
 | S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft, not in git) | Framegen → Advanced → **Late frame skip** | Not flown |
 | M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card (8e10a49) | measurement only | Not flown |
+| S10 | Synthesis waits on the GPU for the hand-over copy of a staging texture before writing it again (R7) | OFXR fork patch 0023 | none (ordering fix) | Not flown |
+| S11 | The queue the headset runtime judges frames by at HIGH priority (R2) | OFXR fork patch 0024 | Framegen → Advanced → **Headset queue at high priority** | Not flown |
+| S12 | No D3D11 GPU wait queued for an image read that has already completed (R13) | OFXR fork patch 0026 | none | Not flown |
+| S13 | Launch/Apply redeploys when this version writes a component differently, though the profile is unchanged (R4) | `ControlService.cs` | none (correctness) | Tested offline |
+| M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 | measurement only | Checked on the baseline log |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
@@ -99,9 +104,52 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 
 Counts over the flying seconds: headset images made (result 9) and given back (10), waits to reuse an image (15), frame generation restarts (continuity_reset), and generated frames handed over before they were drawn (402). The row is amber when an image was given back or there were more waits than seconds.
 
+### S10: staging copy fence (OFXR 0023)
+
+- **What changed**: the hand-over copier remembers the fence value of each staging texture's last copy (it reads the staging on the runtime's queue); before synthesis writes a staging texture again, its queue waits on the GPU for that value when the copy has not run yet. Logged as `presenter_transition` 705.
+- **Why**: nothing ordered the copy before the next write of the same staging (reuse was decided on the CPU, the synthesizer's fence only covers its own writes); with the runtime's queue 15 ms behind (R2) and up to 311 ms in one hitch, a later frame could be copied into an earlier slot.
+- **Expected**: 705 rare (only when the runtime's queue lags several frames); no time jumps in the headset.
+- **Check**: Hitch signals "waits for a hand-over copy".
+
+### S11: headset queue at high priority (OFXR 0024)
+
+- **What changed**: with Separate submission queue on, the queue OFXR gives the runtime (which it judges each frame's completion by) is created at HIGH priority, like OFXR's bridge and synthesis queues (`binding_queue_high_priority=1`; layer default off, the app turns it on).
+- **Why**: in the baseline flight the runtime's queue passed each generated frame's hand-over a median 15 ms later (p90 16.6 ms, 62% later than one refresh), although synthesis had finished ~19 ms before; its work is small (copies, joins, the runtime's waits).
+- **Expected**: Hand-over row "headset queue past each generated frame … ms after it" well under one refresh; fewer missed refreshes.
+- **Check**: Last flight → Hand-over and Missed refreshes, with the switch on and off.
+
+### S12: no needless write waits (OFXR 0026)
+
+- **What changed**: before DCS writes an image, the bridge queues a D3D11 fence wait only if the layer's last read of it has not completed.
+- **Why**: queued every time (twice a frame), each wait could split DCS's command buffer on its render thread for nothing.
+- **Check**: no direct flight figure; Last flight → Limited by (CPU time per frame) and Hand-over p99.
+
+### S13: redeploy when components change (app)
+
+- **What changed**: when the profile is unchanged and the installed files are intact, Launch/Apply now also compares the installed files with what this version would write (bytes for files it owns whole, owned values for shared inis) and applies again on any difference, naming the file.
+- **Why**: a new OFXR build or ini key shipped with an update was never deployed while the profile stayed the same (seen on this PC: the 12 Oct OFXR DLL and the S2/S4 ini keys were not installed).
+- **Tests**: an install from an older build (a launch.json this build writes differently) is applied again, then reported unchanged.
+
+### M2: steady-flight figures (app; OFXR 0025)
+
+- **Steady seconds**: at 90% or more of the rate OFXR paced DCS to, and so were the 2 s either side (pauses, loading screens and their edges left out).
+- **Late frames per minute**, split by how many headset refreshes late (frame intervals fall into refresh-period steps, so this counts every late frame; "stutters" over twice the median counted about half).
+- **Missed refreshes per minute** and doubled refreshes, from the display times OFXR submitted.
+- **Hand-over**: DCS's xrEndFrame p99 / p99.9 / count over 30 ms, and the runtime queue's lag after each generated frame (log on).
+- **Hitch signals** adds 406 (a generated frame still unwritten a refresh after its hand-over: the headset showed an older image), 705, display-time steps and clock clamps.
+- **Baseline re-read with M2** (11 Oct 22:43): 254 steady seconds of 339 flying; 19.8 late frames/min (29 one refresh late, 30 two, 25 three or more); 41.1 missed refreshes/min; hand-over p99 21.3 ms, p99.9 25.4 ms, 5 over 30 ms; runtime queue lag 15.0 ms p50, 16.6 ms p90, 62% later than one refresh; no headset image rebuilds in steady flight (all six were in pauses).
+
+## A/B protocol (from R1)
+
+1. **Measure with M2**: Late frames/min and Missed refreshes/min are the primary figures; one per change as listed under Changes.
+2. **Fix the scene**: replay one DCS track, or one short mission on autopilot over the same terrain, same time of day, weather and view. Restart DCS each run; one discarded warm-up run.
+3. **Runs**: at least 5 minutes of steady flight each; order A B B A, two runs per side; switch the change back after its pair. An all-on control run at the start and end of a session catches drift.
+4. **Decide**: Confirmed only if the median shift between sides is larger than the difference between the two runs of the same side. Set the OFXR log before launching (switching it in flight rebuilds frame generation, R15).
+5. **Save**: each flight's summary is kept in `%LOCALAPPDATA%\DcsControl\flights\flight-*.json` with its profile, for side-by-side comparison.
+
 ## A/B order (one change per flight)
 
-**Superseded by R1 (review, 12 October):** one flight per side cannot confirm a change smaller than about 40% (late frames per minute varied 10-54 between minutes of the baseline), and Last flight's stutter thresholds undercount late frames. Fix the measurement first, then fly a replayed track, A B B A, two runs per side. The list below stays as the order of what to test.
+**Superseded by the protocol above** (R1). The list below stays as the order of what to test; start with the frame limit (R3) and the headset queue priority (S11).
 
 1. New build as installed (all of the above on). Compare with the baseline.
 2. Framegen → In-headset diagnostics → **OFXR log** off, to confirm S3 removed its cost (Last flight then has no per-frame figures).
@@ -129,19 +177,19 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 
 | ID | Finding | Evidence | Proposed action | Status |
 | --- | --- | --- | --- | --- |
-| R1 | Last flight cannot judge an A/B: stutter (> 2 × median) and on-time (1.5 × slot) thresholds fall on the 72 Hz steps and count about half the late frames (90 reported, 188 real in the baseline); missed headset slots are not counted (204 events, most within 150 ms of a late DCS frame); the flying window includes pauses and loading edges; Hitch signals over the whole span; only the latest flight is kept | baseline log, `LastFlight.cs` | Late frames/min by periods late; missed and doubled headset slots/min (from `internal_end_frame` display times); app_end_frame p99/p99.9; stricter flying window; save each flight's summary and compare two | Open |
-| R2 | The headset's queue (binding queue, NORMAL priority) gets past each generated frame's hand-over 14.8 ms p50 later (p90 16.6), more than a 72 Hz period for 58% of them, although synthesis finished ~19 ms earlier | baseline log 913/916 → 914 probes; `openxr_layer.cpp:6084` | Binding queue at HIGH priority; probes to split the lag; Last flight row for it | Open |
+| R1 | Last flight cannot judge an A/B: stutter (> 2 × median) and on-time (1.5 × slot) thresholds fall on the 72 Hz steps and count about half the late frames (90 reported, 188 real in the baseline); missed headset slots are not counted (204 events, most within 150 ms of a late DCS frame); the flying window includes pauses and loading edges; Hitch signals over the whole span; only the latest flight is kept | baseline log, `LastFlight.cs` | Late frames/min by periods late; missed and doubled headset slots/min (from `internal_end_frame` display times); app_end_frame p99/p99.9; stricter flying window; save each flight's summary and compare two | Done (M2); compare view still to do |
+| R2 | The headset's queue (binding queue, NORMAL priority) gets past each generated frame's hand-over 14.8 ms p50 later (p90 16.6), more than a 72 Hz period for 58% of them, although synthesis finished ~19 ms earlier | baseline log 913/916 → 914 probes; `openxr_layer.cpp:6084` | Binding queue at HIGH priority; probes to split the lag; Last flight row for it | Switch added (S11); to fly |
 | R3 | DCS's 36 FPS cap (Match refresh) is a second pacer at OFXR's exact period: DCS arrives at a drifting offset, the generated frame gets anywhere from a full period to none, and the presenter can start late and put two frames in one headset slot | two reviews; 11 doubled slots, 24 display-time corrections in the baseline | A/B Very high (300) or a cap at 37-38 FPS; then change the default for Virtual Desktop with frame generation | Open |
-| R4 | Apply does not redeploy when only DCS Control's own components changed (a new OFXR DLL, a new ini key); the deployed OFXR is still the 11 Oct build until a full Apply | `ControlService.cs:391`; deployed DLL hash ≠ built | Compare the installed files with what this build would write | Open |
+| R4 | Apply does not redeploy when only DCS Control's own components changed (a new OFXR DLL, a new ini key); the deployed OFXR is still the 11 Oct build until a full Apply | `ControlService.cs:391`; deployed DLL hash ≠ built | Compare the installed files with what this build would write | Fixed (S13) |
 | R5 | Engine module render-thread waits add up beyond the known 3.6 ms: shadow-plan cap per pass (S6) plus duplicate build, G-buffer redo waits; DropStale spins are not counted; a late job adds helpers for ~6.7 s (feedback) | `shadow_batch.h:620`, `gb_rec.h:3734`, `shadow_rec.h:1227` | One per-frame wait budget (~0.5 ms); DropStale never spins; plan wait 0.3-0.5 ms without the duplicate build; one counter for all render-thread stalls | Open |
 | R6 | 28 recorder threads at NORMAL priority on 16 logical CPUs, worker spins up to 20 ms, about 100 kernel calls and 28 needless wakes per frame on the render thread | `shadow_rec.h:4939`, `gb_rec.h:5362` | Helpers 1/1, below normal without priority boost, short spins then WaitOnAddress; A/B helpers 3/2 vs 1/1 | Open |
-| R7 | Staging textures can be overwritten by synthesis before the hand-over copy on the headset's queue has read them (no GPU-side order; reuse decided on the CPU) | `openxr_layer.cpp:2320`, `d3d12_frame_synthesizer.cpp:3784` | Per-slot copy fence the synthesis queue waits on (or reports busy) | Open |
-| R8 | 2× deep pipeline gets 4 synthetic staging textures (0018 meant only 3×): ~145 MB unused; the S4 spare likely unneeded (2 × 36 MB) | `openxr_layer.cpp:3776` | 4 only when 3× is possible; spare off by default after a flight shows no waits | Open |
+| R7 | Staging textures can be overwritten by synthesis before the hand-over copy on the headset's queue has read them (no GPU-side order; reuse decided on the CPU) | `openxr_layer.cpp:2320`, `d3d12_frame_synthesizer.cpp:3784` | Per-slot copy fence the synthesis queue waits on (or reports busy) | Fixed (S10) |
+| R8 | 2× deep pipeline gets 4 synthetic staging textures (0018 meant only 3×): ~145 MB unused; the S4 spare likely unneeded (2 × 36 MB) | `openxr_layer.cpp:3776` | 4 only when 3× is possible; spare off by default after a flight shows no waits | Not changed: a 2× deep session can switch to 3× live (triple_switchable) and nothing is created at the switch, so the four textures are needed from the start; allocating them at the switch would save ~145 MB of 24 GB at real complexity. Spare image (S4): decide after a flight |
 | R9 | OFXR's presenter holds its content lock across Virtual Desktop's image wait and xrEndFrame; DCS's xrEndFrame needs it every frame (same pattern as S1) | `openxr_layer.cpp:10399-11663`, `16418` | Keep runtime calls outside the lock with single rings; log lock waits over 0.5 ms | Open |
 | R10 | Presenter thread at default priority; runtime-entry gate held across Virtual Desktop's xrWaitFrame although DCS's bridged session does not need it | `openxr_layer.cpp:12104`, `2133` | THREAD_PRIORITY_HIGHEST + MMCSS for the presenter; skip the gate with the D3D11 bridge | Open |
-| R11 | Generated frames handed over before drawn (402): no torn image (the copy waits on the GPU on the headset's queue), but an older image when generation finishes after Virtual Desktop's deadline; not logged in 2× | `openxr_layer.cpp:10597`, `10525` | Log "still unwritten a slot later" per second; then a bounded wait or the layer's repeat frame | Open |
+| R11 | Generated frames handed over before drawn (402): no torn image (the copy waits on the GPU on the headset's queue), but an older image when generation finishes after Virtual Desktop's deadline; not logged in 2× | `openxr_layer.cpp:10597`, `10525` | Log "still unwritten a slot later" per second; then a bounded wait or the layer's repeat frame | Logged (406, patch 0025); hold or repeat to do |
 | R12 | Display-time correction steps DCS's predicted time by a whole period (13.9 ms pose jolt) | `latency_control.cpp:293` | Ramp over several frames | Open |
-| R13 | `before_write` queues a D3D11 GPU wait every frame even when the read finished long ago | `d3d11_bridge.cpp:983` | Skip when the fence has completed | Open |
+| R13 | `before_write` queues a D3D11 GPU wait every frame even when the read finished long ago | `d3d11_bridge.cpp:983` | Skip when the fence has completed | Fixed (S12) |
 | R14 | Both eyes' synthesis run strictly one after the other (~3.0 ms per pair); PERFORMANCE.md's reason for not overlapping them (shared bridge queue) is wrong | baseline `synthesis_gpu_span` | Submit both packs and flows before both compositions | Open |
 | R15 | Switching the OFXR log in flight drains the presenter and rebuilds the synthesizer (a hitch, and a different synthesizer): A/B step 2 tests more than logging | `openxr_layer.cpp:14296` | Set the log before launch; test S3 with `flush_each_event` instead | Open |
 | R16 | Smaller: CPU Boost helper crash leaves affinity/priority changed; OFXR logs never pruned (170 MB); helper and app polling during flight; Engine page polls when hidden; 1 kHz ABOVE_NORMAL timer thread; toggles freeze all DCS threads; partw scan; shader lock across CreateVertexShader | app and engine reviews | Batch of small fixes | Open |

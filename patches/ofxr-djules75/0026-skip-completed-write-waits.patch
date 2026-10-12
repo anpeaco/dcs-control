@@ -1,0 +1,69 @@
+diff --git a/include/xrfg/d3d11_bridge.hpp b/include/xrfg/d3d11_bridge.hpp
+--- a/include/xrfg/d3d11_bridge.hpp
++++ b/include/xrfg/d3d11_bridge.hpp
+@@ -100,6 +100,9 @@ public:
+     // queue (note_external_read) was still running, so the application's
+     // write of it now waits for that read on the GPU.
+     [[nodiscard]] HRESULT before_write(std::uint32_t index) noexcept;
++    // DCS Control (0026): before_write calls that queued no wait because the
++    // layer's last read of the image had already completed.
++    [[nodiscard]] std::uint64_t skipped_write_waits() const noexcept;
+ 
+     // The application released image `index`: on the copy and resolve paths
+     // the application's texture is moved into the shared one first; then its
+diff --git a/src/d3d11/d3d11_bridge.cpp b/src/d3d11/d3d11_bridge.cpp
+--- a/src/d3d11/d3d11_bridge.cpp
++++ b/src/d3d11/d3d11_bridge.cpp
+@@ -74,6 +74,8 @@ struct D3D11BridgeSwapchain::Impl {
+     // Signalled by the layer's queue only (copies, reads), waited by the
+     // application's context and the CPU.
+     ComPtr<ID3D12Fence> d3d12_fence;
++    // DCS Control (0026): before_write calls that found the read done.
++    std::uint64_t skipped_waits{};
+     ComPtr<ID3D11Fence> d3d11_fence;
+     // DCS VR Control (0006): signalled by the application's context only (its
+     // rendering is finished: the hand-over), waited by the layer's queue.
+@@ -983,6 +985,17 @@ struct D3D11BridgeSwapchain::Impl {
+         if (path == D3D11BridgePath::depth_private || last_read[index] == 0) {
+             return external_wait ? S_FALSE : S_OK;
+         }
++        // DCS Control (0026): a read that has already completed needs no
++        // wait. Queued anyway, the D3D11 fence wait split DCS's command
++        // buffer on its render thread twice a frame for nothing (the read was
++        // usually frames old). UINT64_MAX (device removed) falls through to
++        // the wait, which then fails as before.
++        if (const std::uint64_t completed = d3d12_fence->GetCompletedValue();
++            completed != std::numeric_limits<std::uint64_t>::max() &&
++            completed >= last_read[index]) {
++            ++skipped_waits;
++            return external_wait ? S_FALSE : S_OK;
++        }
+         const HRESULT result =
+             d3d11_context4->Wait(d3d11_fence.Get(), last_read[index]);
+         if (FAILED(result)) {
+@@ -1052,6 +1065,10 @@ std::span<ID3D12Resource* const> D3D11BridgeSwapchain::shared_images() const noe
+     return impl_->shared_views;
+ }
+ 
++std::uint64_t D3D11BridgeSwapchain::skipped_write_waits() const noexcept {
++    return impl_ ? impl_->skipped_waits : 0;
++}
++
+ HRESULT D3D11BridgeSwapchain::before_write(std::uint32_t index) noexcept {
+     try {
+         std::scoped_lock lock(impl_->mutex);
+diff --git a/tests/d3d11_bridge_tests.cpp b/tests/d3d11_bridge_tests.cpp
+--- a/tests/d3d11_bridge_tests.cpp
++++ b/tests/d3d11_bridge_tests.cpp
+@@ -230,6 +230,11 @@ void test_direct(const Devices& devices) {
+     // Image 0 was never released and stays untouched.
+     expect(read_back(devices, runtime[0].Get(), false, &bytes, &pitch), "direct: readback 0");
+     expect(!bytes.empty() && bytes[0] == 0, "direct: an unreleased image is untouched");
++    // DCS Control (0026): image 1's read has completed (idle above): its next
++    // write queues no wait.
++    const std::uint64_t skipped_idle = bridge.skipped_write_waits();
++    expect(SUCCEEDED(bridge.before_write(1)), "direct: before_write after idle");
++    expect(bridge.skipped_write_waits() == skipped_idle + 1, "direct: a completed read queues no write wait");
+     // DCS Control (0022): before_write says when a read on another queue was
+     // still running (S_FALSE), and not when it had completed.
+     ComPtr<ID3D12Fence> reader;

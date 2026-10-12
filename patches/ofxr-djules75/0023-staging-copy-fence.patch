@@ -1,0 +1,166 @@
+diff --git a/include/xrfg/d3d12_frame_synthesizer.hpp b/include/xrfg/d3d12_frame_synthesizer.hpp
+--- a/include/xrfg/d3d12_frame_synthesizer.hpp
++++ b/include/xrfg/d3d12_frame_synthesizer.hpp
+@@ -374,6 +374,13 @@ public:
+     [[nodiscard]] HRESULT synchronize_producer_queue(
+         ID3D12CommandQueue* queue) noexcept;
+ 
++    // DCS Control (0023): makes this synthesizer's queue wait, on the GPU,
++    // until `fence` reaches `value` before its later work runs - a read of
++    // one of its destinations queued elsewhere. S_FALSE when the fence has
++    // already reached it (nothing queued) or the queue is the caller's own.
++    [[nodiscard]] HRESULT wait_for_fence(
++        ID3D12Fence* fence, std::uint64_t value) noexcept;
++
+     // The fence a ticket's values are signalled on, AddRef'd into *fence.
+     // For a caller that has to know whether a pair's output exists yet
+     // without taking this object's lock: ID3D12Fence::GetCompletedValue is
+diff --git a/src/d3d12/d3d12_frame_synthesizer.cpp b/src/d3d12/d3d12_frame_synthesizer.cpp
+--- a/src/d3d12/d3d12_frame_synthesizer.cpp
++++ b/src/d3d12/d3d12_frame_synthesizer.cpp
+@@ -6571,6 +6571,28 @@ HRESULT D3D12FrameSynthesizer::synchronize_producer_queue(
+     }
+ }
+ 
++HRESULT D3D12FrameSynthesizer::wait_for_fence(
++    ID3D12Fence* fence, std::uint64_t value) noexcept {
++    try {
++        std::scoped_lock lock(mutex_);
++        if (impl_ == nullptr || fence == nullptr) {
++            return E_INVALIDARG;
++        }
++        if (impl_->queue == nullptr) {
++            return E_UNEXPECTED;
++        }
++        const std::uint64_t completed = fence->GetCompletedValue();
++        // UINT64_MAX is a removed device: waiting on it would never resolve.
++        if (completed == std::numeric_limits<std::uint64_t>::max() ||
++            completed >= value) {
++            return S_FALSE;
++        }
++        return impl_->queue->Wait(fence, value);
++    } catch (...) {
++        return E_FAIL;
++    }
++}
++
+ HRESULT D3D12FrameSynthesizer::synchronize_consumer_queue(
+     ID3D12CommandQueue* queue,
+     const D3D12FrameSynthesisTicket& ticket) noexcept {
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -2277,6 +2277,35 @@ struct HandoverCopier {
+     std::size_t next_slot{};
+     std::uint64_t next_value{1};
+     std::mutex mutex;
++    // DCS Control (0023): the fence value of each staging texture's last
++    // copy (a copy reads its staging on the runtime's queue). Synthesis on
++    // its own queue must not write the staging again before that copy has
++    // run; see pending_read. A staging texture per entry; at most
++    // kStagingSlotCount + kSyntheticStagingSlotCount3X of them.
++    std::array<std::pair<ID3D12Resource*, std::uint64_t>, kSlots> last_reads{};
++
++    // The value `fence` must reach before `staging` may be written again, or
++    // 0 when its last copy has completed (or it was never copied).
++    [[nodiscard]] std::uint64_t pending_read(ID3D12Resource* staging) noexcept {
++        try {
++            std::scoped_lock lock(mutex);
++            if (staging == nullptr || !fence) {
++                return 0;
++            }
++            for (const auto& [resource, value] : last_reads) {
++                if (resource == staging) {
++                    const std::uint64_t completed = fence->GetCompletedValue();
++                    return completed == std::numeric_limits<std::uint64_t>::max() ||
++                            completed >= value
++                        ? 0
++                        : value;
++                }
++            }
++            return 0;
++        } catch (...) {
++            return 0;
++        }
++    }
+ 
+     [[nodiscard]] HRESULT initialize(ID3D12Device* input_device) noexcept {
+         try {
+@@ -2368,7 +2397,21 @@ struct HandoverCopier {
+             if (FAILED(result)) {
+                 return result;
+             }
+-            slot.fence_value = next_value++;
++            slot.fence_value = next_value;
++            // DCS Control (0023): remember the read (replacing this
++            // staging's entry, else the oldest).
++            auto* entry = &last_reads[0];
++            for (auto& candidate : last_reads) {
++                if (candidate.first == source) {
++                    entry = &candidate;
++                    break;
++                }
++                if (candidate.second < entry->second) {
++                    entry = &candidate;
++                }
++            }
++            *entry = {source, next_value};
++            ++next_value;
+             return S_OK;
+         } catch (...) {
+             return E_FAIL;
+@@ -13345,6 +13388,54 @@ struct PreparedProjectionFrame {
+                     runtime_queue(*state->session)));
+         }
+ 
++        // DCS Control (0023): single-swapchain rings write staging textures
++        // that the hand-over copies into the runtime's image on the runtime's
++        // queue, and nothing ordered that copy before synthesis wrote the
++        // same staging again a few pairs later (its reuse is decided by CPU
++        // retirement, and the synthesizer's own fence only covers its own
++        // writes). With the runtime's queue lagging - Virtual Desktop's
++        // passed each hand-over a median 14.8 ms late in a DCS flight, at
++        // most 311 ms - a later frame's pixels could be copied into an
++        // earlier slot. So the synthesis queue waits on the GPU for the last
++        // copy of every staging this submission writes, when it has not run
++        // yet. 705: a 1 current / 2 synthetic / 3 extra, b the copy's fence
++        // value, c how far the copier's fence still was behind it.
++        if (state->session->d3d12_synthesis_queue && single_rings &&
++            generation->copier) {
++            const std::array<std::pair<std::uint64_t, ID3D12Resource*>, 3> written{{
++                {1, current_slot < generation->current_staging.size()
++                        ? generation->current_staging[current_slot].Get()
++                        : nullptr},
++                {2, request_pair && synthetic_slot < generation->synthetic_staging.size()
++                        ? generation->synthetic_staging[synthetic_slot].Get()
++                        : nullptr},
++                {3, request_extra && extra_slot < generation->synthetic_staging.size()
++                        ? generation->synthetic_staging[extra_slot].Get()
++                        : nullptr}}};
++            for (const auto& [kind, staging] : written) {
++                const std::uint64_t pending = generation->copier->pending_read(staging);
++                if (pending == 0) {
++                    continue;
++                }
++                HRESULT waited = E_FAIL;
++                {
++                    std::scoped_lock gpu_lock(state->session->gpu_mutex);
++                    waited = generation->synthesizer->wait_for_fence(
++                        generation->copier->fence.Get(), pending);
++                }
++                if (waited == S_OK) {
++                    const std::uint64_t completed =
++                        generation->copier->fence->GetCompletedValue();
++                    xrfg::bridge_flight_logger().event(
++                        xrfg::BridgeFlightOperation::presenter_transition,
++                        705,
++                        kind,
++                        pending,
++                        completed < pending ? pending - completed : 0);
++                }
++            }
++        }
++
+         const std::uint32_t current_destination_index = single_rings
+             ? static_cast<std::uint32_t>(current_slot)
+             : static_cast<std::uint32_t>(current_slot) *

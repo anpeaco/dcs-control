@@ -17,6 +17,9 @@
 - Engine Optimizations: the terrain prefetch fix no longer puts DCS's terrain workers to sleep for a timer tick; DCS's render thread waits at most 2 ms (was 20 ms) for a shadow plan.
 - CPU Boost changes only DCS's priority on a single-CCD CPU such as the 9800X3D, where DCS's core classes are only boost-clock ranks; the flight helper asks Windows for every process's GPU time every 30 s instead of 5 s.
 - Last flight: a **Hitch signals** row counts what OFXR logged that holds a frame up while flying.
+- OFXR: generation no longer overwrites a frame before its copy to the headset has run (a later frame could reach an earlier refresh); the queue the headset runtime judges frames by runs at high priority (**Headset queue at high priority**); no needless GPU waits before DCS draws.
+- **Launch DCS and Apply install a new version's components** even when your profile is unchanged (before, an update's new OFXR or settings stayed undeployed until a setting changed).
+- Last flight measures steady flight: **Late frames** (per minute, by headset refreshes late), **Missed refreshes**, **Hand-over**; each flight's summary is kept for comparison.
 
 # 0.5.5 preview
 

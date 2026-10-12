@@ -533,6 +533,7 @@ function buildFields() {
   field(more,'ofxrSingleRings','Fewer headset images','One image ring per generated output instead of two, copied in as each frame is handed over. Saves video memory the headset runtime holds, most with 2×; with 3× it saves little.','toggle',null,fg);
   field(more,'ofxrKeepRuntimeImages','Keep headset images once made','When DCS shows a frame of its own (a pause, a menu, a hitch), the headset runtime\'s images for it are made once and kept, instead of being destroyed 5 s later and made again during a frame. Costs their video memory from then on.','toggle',null,fg);
   field(more,'ofxrInPlaceSpareImage','Spare image for in-place reading','With Read frames in place, DCS gets one more image to draw into, so its next frame rarely waits for frame generation to finish reading the image it reuses. Costs one image of video memory per DCS image ring.','toggle',null,fg);
+  field(more,'ofxrHighPriorityQueue','Headset queue at high priority','The queue the headset runtime judges each frame by runs at high priority, like frame generation\'s own, so it is not held behind DCS\'s rendering. Needs Separate submission queue.','toggle',null,fg);
   field(more,'ofxrCaptureAtEndFrame','Copy eyes at frame end','OFXR copies each eye when DCS finishes the frame rather than when it lets go of the eye, so an eye drawn to late is never a frame old on its own.','toggle',null,fg);
   more = disclosure(c,'In-headset diagnostics','Status panel and its key, VRAM counter, OFXR counter and log.');
   field(more,'diagnosticOverlayKey','Diagnostic panel key','Shows or hides FPS, DLSS 5 and frame generation status in the headset, for the current flight. Click, then press the keys. Default Alt+Shift+F12.','hotkey',null,p => p.frameGen !== 'Off');
@@ -1083,15 +1084,29 @@ function renderFlight() {
     rows.push(['PC during flight',`CPU ${m.cpuP90 != null ? fmt(m.cpuP90)+'%' : '?'} · GPU ${m.gpuUtilP90 != null ? fmt(m.gpuUtilP90)+'%' : '?'} p90`,[thread, card, others].filter(Boolean).join(' · ') || `${duration(m.seconds)} recorded`,
       m.saturatedShare >= .2 || m.thermalShare >= .05 || Boolean(m.otherGpu)]);
   }
+  // Steady flight (seconds at 90% of the paced rate, 2 s either side too): late frames counted in headset refreshes, the
+  // refreshes the headset got nothing new for, and the tail of DCS's hand-over. The A/B figures in docs/PERF_CHANGES.md.
+  const dv = f.delivery;
+  if (dv) {
+    const unit = dv.headsetPeriodMs != null ? 'headset refresh' : 'frame slot';
+    rows.push(['Late frames',`${fmt(dv.latePerMinute,1)} per minute`,dv.lateFrames ? `${fmt(dv.late1)} one ${unit} late, ${fmt(dv.late2)} two, ${fmt(dv.late3Plus)} three or more · ${duration(dv.seconds)} of steady flight` : `none in ${duration(dv.seconds)} of steady flight`,dv.latePerMinute >= 6]);
+    if (dv.missedRefreshes != null) rows.push(['Missed refreshes',`${fmt(dv.missedPerMinute,1)} per minute`,`${fmt(dv.missedRefreshes)} headset refreshes with no new frame${dv.doubledRefreshes ? ` · ${fmt(dv.doubledRefreshes)} with two frames for one refresh` : ''}`,dv.missedPerMinute >= 6]);
+    if (dv.endFrameP99Ms != null) rows.push(['Hand-over',`${fmt(dv.endFrameP99Ms,1)} ms p99`,[`DCS's time handing each frame over: p99.9 ${fmt(dv.endFrameP999Ms,1)} ms${dv.endFramesOver30Ms ? `, ${fmt(dv.endFramesOver30Ms)} over 30 ms` : ''}`,
+      dv.queueLagP50Ms != null ? `headset queue past each generated frame ${fmt(dv.queueLagP50Ms,1)} ms after it (p90 ${fmt(dv.queueLagP90Ms,1)}), ${share(dv.queueLagOverPeriodShare)} later than one refresh` : null].filter(Boolean).join(' · '),
+      dv.endFramesOver30Ms > 0 || dv.queueLagOverPeriodShare >= .25]);
+  }
   // OFXR's events that hold a frame up (docs/PERF_CHANGES.md says which fix each one checks).
   const h = f.hitches;
   if (h) {
     const parts = [h.runtimeImagesMade ? `headset images made ${h.runtimeImagesMade}×` : null, h.runtimeImagesGivenBack ? `given back ${h.runtimeImagesGivenBack}×` : null,
       h.inPlaceWaits ? `${fmt(h.inPlaceWaits)} waits to reuse an image` : null, h.continuityResets ? `frame generation restarted ${h.continuityResets}×` : null,
+      h.unwrittenAtNextSlot ? `${fmt(h.unwrittenAtNextSlot)} generated frames shown late (an older image in their place)` : null,
+      h.stagingWaits ? `${fmt(h.stagingWaits)} waits for a hand-over copy` : null,
+      h.displayTimeSteps ? `display time stepped ${h.displayTimeSteps}×` : null, h.clockClamps ? `frame clock pulled back ${h.clockClamps}×` : null,
       h.unwrittenHandovers ? `${fmt(h.unwrittenHandovers)} generated frames handed over before drawn` : null].filter(Boolean);
-    const events = h.runtimeImagesMade + h.runtimeImagesGivenBack + h.continuityResets;
+    const events = h.runtimeImagesMade + h.runtimeImagesGivenBack + h.continuityResets + h.unwrittenAtNextSlot + h.displayTimeSteps + h.clockClamps;
     rows.push(['Hitch signals',events ? `${fmt(events)} in ${duration(h.seconds)}` : 'None',parts.join(' · ') || 'No headset image rebuilds, waits or restarts while flying',
-      h.runtimeImagesGivenBack > 0 || h.inPlaceWaits > h.seconds]);
+      h.runtimeImagesGivenBack > 0 || h.inPlaceWaits > h.seconds || h.unwrittenAtNextSlot > 0]);
   }
   if (c?.gpuPerPairMs != null) rows.push(['Frame generation GPU',`${fmt(c.gpuPerPairMs,2)} ms per frame`,'median GPU time to generate the frames between two DCS frames']);
   if (c?.vramPeakMiB) rows.push(['Video memory',`${gb(c.vramPeakMiB)} peak`,[c.vramBudgetMiB ? `of ${gb(c.vramBudgetMiB)} Windows gave DCS` : null, c.gpuMemoryMiB ? `${gb(c.gpuMemoryMiB)} card` : null].filter(Boolean).join(' · '),c.vramBudgetMiB > 0 && c.vramPeakMiB >= c.vramBudgetMiB*.95]);

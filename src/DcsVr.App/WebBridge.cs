@@ -89,6 +89,8 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
                 var key = JsonData.Serialize(sources);
                 lock (_flightLock) if (_flightCache is { } hit && hit.Key == key && DateTime.UtcNow - hit.At < TimeSpan.FromSeconds(10)) return Reply(id, hit.Reply);
                 var flight = await Task.Run(() => LastFlight.Read(sources));
+                // Each flight's summary is kept with the profile that flew it, for comparing A/B flights.
+                if (flight is not null) { var flown = service.ReadAppliedProfile()?.Profile; await Task.Run(() => LastFlight.Keep(flight, Path.Combine(service.StateRoot, "flights"), flown)); }
                 object reply = new { running = false, flight };
                 lock (_flightLock) _flightCache = (key, DateTime.UtcNow, reply);
                 return Reply(id, reply);

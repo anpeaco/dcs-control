@@ -285,6 +285,7 @@ public static class ConfigurationWriters
         capture_at_end_frame={(p.OfxrCaptureAtEndFrame ? 1 : 0)}
         lazy_runtime_reclaim_ms={(p.OfxrKeepRuntimeImages ? 0 : 5000)}
         in_place_spare_image={(p.OfxrInPlaceSpareImage ? 1 : 0)}
+        binding_queue_high_priority={(p.OfxrHighPriorityQueue ? 1 : 0)}
 
         [diagnostics]
         logging_enabled={(p.DiagnosticRecorder ? 1 : 0)}

@@ -1,0 +1,34 @@
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -10507,6 +10507,11 @@ void continuous_presenter_main(
+             // DCS VR Control: slots this cycle missed (adaptive 2X/3X), and a
+             // display time correction step, both recorded after the lock.
+             std::uint32_t missed_slots = 0;
++            // DCS Control (0025): a first synthetic handed over unwritten
++            // (402) and still unwritten at the next slot - the one case where
++            // the headset showed an older image for it. Recorded after the
++            // lock as presenter_transition 406.
++            bool unwritten_leader_missed = false;
+             xrfg::latency::DisplayTimeStep display_time_step{};
+             std::size_t display_time_mode = 0;
+             // DCS VR Control (0006): how long after its slot's wait this goes
+@@ -10596,6 +10601,7 @@ void continuous_presenter_main(
+                     state->unwritten_leader_ready.clear();
+                     if (!written) {
+                         ++missed_slots;
++                        unwritten_leader_missed = true;
+                     }
+                 }
+                 if (depth_slot) {
+@@ -10811,6 +10817,10 @@ void continuous_presenter_main(
+                 state->frames_per_application_frame == 2) {
+                 state->adaptive_missed_slots.fetch_add(missed_slots);
+             }
++            if (unwritten_leader_missed) {
++                xrfg::bridge_flight_logger().event(
++                    xrfg::BridgeFlightOperation::presenter_transition, 406);
++            }
+             if (display_time_step.changed) {
+                 xrfg::bridge_flight_logger().event(
+                     xrfg::BridgeFlightOperation::display_time_correction,
