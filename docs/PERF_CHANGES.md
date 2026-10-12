@@ -41,7 +41,7 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app (aed1158) | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Installed, off: not flown |
 | M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Working; see M3 |
 | M3 | Steady seconds leave out time the headset session was not FOCUSED (a headset or Virtual Desktop menu); S14's "frames spent the budget" counts only waits that ran to the budget's limit | `LastFlight.cs`, engine module `render_wait.h` (uncommitted) | measurement only | Checked on the 13:37 log |
-| S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | Not flown |
+| S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | Flown once (12 Oct 14:16): unwritten generated frames down about 20×, but late frames not comparable yet (needs Match refresh on the perf-test mission) |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
@@ -186,6 +186,35 @@ What the log shows:
 
 Next flights use **`Golan_Valley_of_Tears_v5_PERF_TEST.miz`** (made by `scripts/make-perf-mission.py`): the same F-15E, immortal with unlimited fuel, starting at 4000 m heading north over both kill boxes with the autopilot engaged by the mission (heading and altitude hold), and the helicopter dice fixed. Same throttle position every run; stay out of the headset menus while recording.
 
+## Flight 12 October 2026 14:16 (S16: frame limit Very high)
+
+First flight on `Golan_Valley_of_Tears_v5_PERF_TEST.miz`. Same build and profile as 13:37, except Frame limit **Very high (300 FPS)**. OFXR still pacing DCS at 36 FPS: interval p50 27.8 ms, 34.9 rendered FPS. 174 steady seconds, out of about 80-250 s of the log. The 14:11 launch left no OFXR log and still had Match refresh, so it is not counted.
+
+**Not an A/B**: 13:37 was on the regular mission. GPU load was close (DCS GPU p50 19.0 against 18.3 ms), but the next flight has to be Match refresh on the perf-test mission before S16's Status can change.
+
+| Figure (steady seconds) | 13:37 (Match refresh, regular mission) | 14:16 (Very high, perf-test mission) |
+| --- | --- | --- |
+| Late frames / min | 12.2 (21 one refresh late, 6 two, 5 three or more) | **20.3** (43 / 10 / 6) |
+| Missed refreshes / min | 22.8 | **16.6** |
+| Generated frames handed over unwritten (402) | about 5,500 (~33/s) | **224** (1.3/s) |
+| ... still unwritten a refresh later (406) | 1,187 (7.5/s) | **56** (0.3/s) |
+| Headset queue after each generated frame, p50 / p90 | 9.6 / 16.8 ms | **0.5 / 1.2 ms** |
+| ... later than one refresh | 22% | **1%** |
+| DCS xrWaitFrame p50 / p90 | 7.3 / 17.3 ms | 0.6 / 3.7 ms |
+| DCS xrEndFrame p50 | 16.1 ms | 22.9 ms (see below) |
+| CPU ms per frame p50 / p90 / p99 | 6.0 / 8.6 / 27.6 | 5.2 / 6.8 / **15.1** |
+| Staging waits (705), continuity resets | 2 / 278 (menu gap) | 6 / 1 |
+
+What the log shows:
+
+- **R3's hypothesis holds for the hand-over**: with DCS no longer pacing itself, OFXR's xrEndFrame holds DCS (~22 ms) and releases it at a fixed point of the presenter's cycle. Each pair now arrives with time to be synthesized: almost no generated frame goes out unwritten, and the headset's queue passes it within a millisecond. In the 13:37 flight, 406 rose with the scene. This flight's GPU load was similar and 406 stayed low throughout.
+- **Hand-over figures are not comparable between frame-limit modes**: under Very high, OFXR's pacing hold is inside DCS's xrEndFrame (it was in xrWaitFrame, plus DCS's own limiter), so "hand-overs over 30 ms" (104) and xrEndFrame p99 now mostly measure the hold. Last flight should report the hold separately (M2 follow-up).
+- **Late frames come from two sources**, not from GPU load:
+  - DCS CPU spikes: frame_load CPU 55-98 ms per frame at 123.3-124.9 s; 36-73 ms at 147.4, 152.8, 198.6, 234.8 and 247.3 s.
+  - One stall inside OFXR's xrWaitFrame: 83.2 ms at 183.6 s, three DCS periods to within 0.1 ms. The presenter was idle, waiting for DCS's frame, and the GPU was idle (no synthesis from 183.547 to 183.650 s). DCS's render thread entered xrBeginFrame within 13 µs of the wait's return.
+  - Nothing in the log explains the stall. layer_wait_frame has no timing of its steps (frame_call_mutex, presenter wait, flush_session_pending_copies, state mutex): R18.
+- **One refresh late doubled** (21 → 43): to judge only once Match refresh has flown the same mission.
+
 ## A/B protocol (from R1)
 
 1. **Measure with M2**: Late frames/min and Missed refreshes/min are the primary figures; one per change as listed under Changes.
@@ -243,7 +272,7 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | --- | --- | --- | --- | --- |
 | R1 | Last flight cannot judge an A/B: stutter (> 2 × median) and on-time (1.5 × slot) thresholds fall on the 72 Hz steps and count about half the late frames (90 reported, 188 real in the baseline); missed headset slots are not counted (204 events, most within 150 ms of a late DCS frame); the flying window includes pauses and loading edges; Hitch signals over the whole span; only the latest flight is kept | baseline log, `LastFlight.cs` | Late frames/min by periods late; missed and doubled headset slots/min (from `internal_end_frame` display times); app_end_frame p99/p99.9; stricter flying window; save each flight's summary and compare two | Done (M2); compare view still to do |
 | R2 | The headset's queue (binding queue, NORMAL priority) gets past each generated frame's hand-over 14.8 ms p50 later (p90 16.6), more than a 72 Hz period for 58% of them, although synthesis finished ~19 ms earlier | baseline log 913/916 → 914 probes; `openxr_layer.cpp:6084` | Binding queue at HIGH priority; probes to split the lag; Last flight row for it | Switch added (S11); to fly |
-| R3 | DCS's 36 FPS cap (Match refresh) is a second pacer at OFXR's exact period: DCS arrives at a drifting offset, the generated frame gets anywhere from a full period to none, and the presenter can start late and put two frames in one headset slot | two reviews; 11 doubled slots, 24 display-time corrections in the baseline | A/B Very high (300) or a cap at 37-38 FPS; then change the default for Virtual Desktop with frame generation | A/B started: profile set to Very high on 12 Oct (S16) |
+| R3 | DCS's 36 FPS cap (Match refresh) is a second pacer at OFXR's exact period: DCS arrives at a drifting offset, the generated frame gets anywhere from a full period to none, and the presenter can start late and put two frames in one headset slot | two reviews; 11 doubled slots, 24 display-time corrections in the baseline | A/B Very high (300) or a cap at 37-38 FPS; then change the default for Virtual Desktop with frame generation | Very high flown 12 Oct 14:16 (S16): 402/406 and queue lag down sharply; Match refresh on the perf-test mission still to fly |
 | R4 | Apply does not redeploy when only DCS Control's own components changed (a new OFXR DLL, a new ini key); the deployed OFXR is still the 11 Oct build until a full Apply | `ControlService.cs:391`; deployed DLL hash ≠ built | Compare the installed files with what this build would write | Fixed (S13) |
 | R5 | Engine module render-thread waits add up beyond the known 3.6 ms: shadow-plan cap per pass (S6) plus duplicate build, G-buffer redo waits; DropStale spins are not counted; a late job adds helpers for ~6.7 s (feedback) | `shadow_batch.h:620`, `gb_rec.h:3734`, `shadow_rec.h:1227` | One per-frame wait budget (~0.5 ms); DropStale never spins; plan wait 0.3-0.5 ms without the duplicate build; one counter for all render-thread stalls | Budget and counting done (S14); duplicate plan build and arming kernel calls still open |
 | R6 | 28 recorder threads at NORMAL priority on 16 logical CPUs, worker spins up to 20 ms, about 100 kernel calls and 28 needless wakes per frame on the render thread | `shadow_rec.h:4939`, `gb_rec.h:5362` | Helpers 1/1, below normal without priority boost, short spins then WaitOnAddress; A/B helpers 3/2 vs 1/1 | Switch added (S15); worker spin waits still open |
@@ -258,3 +287,4 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | R15 | Switching the OFXR log in flight drains the presenter and rebuilds the synthesizer (a hitch, and a different synthesizer): A/B step 2 tests more than logging | `openxr_layer.cpp:14296` | Set the log before launch; test S3 with `flush_each_event` instead | Open |
 | R16 | Smaller: CPU Boost helper crash leaves affinity/priority changed; OFXR logs never pruned (170 MB); helper and app polling during flight; Engine page polls when hidden; 1 kHz ABOVE_NORMAL timer thread; toggles freeze all DCS threads; partw scan; shader lock across CreateVertexShader | app and engine reviews | Batch of small fixes | Open |
 | R17 | The engine module's own A/B bench measures frame interval, which the cap pins at 27.8 ms; p95 of ~144 frames per block; fixed order; blocks alias with 10 s jobs | `bench.h:50` | Measure render-thread busy time; ABBA; longer blocks | Open |
+| R18 | DCS's xrWaitFrame blocked 83.2 ms (exactly three 36 FPS periods) inside OFXR with the presenter waiting for DCS and the GPU idle; the layer's wait path logs no step | 14:16 flight, 183.55-183.63 s; `openxr_layer.cpp:6445` | Log each step of layer_wait_frame_impl over 2 ms (frame_call_mutex, presenter wait, flush copies, state mutex) as a fork patch, then fly again | Open |
