@@ -370,7 +370,7 @@ public sealed class ControlService(string distributionRoot, string stateRoot)
     /// <summary>The first file <paramref name="plan"/> would write differently from what <paramref name="journal"/> installed:
     /// bytes for a file DCS Control owns whole, the owned values for an ini it shares; options.lua's values are checked by
     /// VerifyInstalled. Null when this build would write exactly what is installed.</summary>
-    internal static string? StaleComponent(ApplyPlan plan, TransactionJournal journal)
+    public static string? StaleComponent(ApplyPlan plan, TransactionJournal journal)
     {
         var installed = new Dictionary<string, JournalEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in journal.Entries.Where(e => !e.Deleted)) installed[Path.GetFullPath(entry.Path)] = entry;

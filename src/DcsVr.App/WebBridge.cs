@@ -283,6 +283,25 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
     }
     /// <summary>"Pimax Play changed …" while the applied profile follows Pimax Play and its values changed since Apply;
     /// Launch DCS updates the focus area first.</summary>
+    /// <summary>The first file this version of DCS Control would write differently from the applied profile's (a new OFXR
+    /// build, engine payload or setting key after an update), so the page offers Apply although the draft is unchanged.
+    /// Checked once per applied profile: components only change with the app itself.</summary>
+    private (string? JournalId, string? Changed) _componentsChecked;
+    private string? ComponentsChanged(AppliedProfile? applied)
+    {
+        if (applied is null) return null;
+        var journal = service.Originals.ReadCurrent() ?? applied.Journal;
+        if (_componentsChecked.JournalId == journal.Id) return _componentsChecked.Changed;
+        string? changed = null;
+        try
+        {
+            if (ControlService.StaleComponent(service.Preview(applied.Profile, CurrentInventory), journal) is { } stale)
+                changed = Path.GetFileName(stale);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException) { }
+        _componentsChecked = (journal.Id, changed);
+        return changed;
+    }
     private static string? FoveaChanged(AppliedProfile? applied) =>
         applied is not null && PimaxFovea.UsesPimaxPlay(applied.Profile) && PimaxFovea.Resolve(applied.Profile) is { Pimax: { } pimax } resolved
             && !PimaxFovea.SameFovea(resolved.Profile, applied.Fovea ?? AppliedFovea.From(applied.Profile, null))
@@ -729,7 +748,7 @@ internal sealed class WebBridge(ControlService service, Window? owner = null,
             originals = new { count = originals.Count, files = originals.Files, state = originals.State, lastAction = originals.LastAction, lastActionAt = originals.LastActionAt, folder = originals.Folder },
             launchReady = applied is not null, appliedProfile = applied?.Journal.ProfileId, appliedName = applied?.Profile?.Name ?? applied?.Journal.ProfileId,
             // The applied profile.json content, so the page labels a draft "Applied" only when it matches it.
-            appliedDraft = applied?.Profile, appliedDcs = applied?.Executable, appliedOptions = applied?.OptionsPath, foveaChanged = FoveaChanged(applied), dcsRunning = DcsRunning(),
+            appliedDraft = applied?.Profile, appliedDcs = applied?.Executable, appliedOptions = applied?.OptionsPath, foveaChanged = FoveaChanged(applied), componentsChanged = ComponentsChanged(applied), dcsRunning = DcsRunning(),
             savedRuntime = SavedRuntimeView(), retainedRuntime = RetainedRuntime(), sboysReady = _sboys is not null, launcherBlocked, launcherUnknown = LaunchSafety.LauncherRestartUnknown, dcsDefaultKeys = NeuralHotkeys.DcsDefaultsForCurrentLayout(), readiness = _readiness };
     }
     /// <summary>The app's saved DLSS 5 runtime copy, shown on the DLSS 5 page; null when there is none (or it was forgotten).</summary>

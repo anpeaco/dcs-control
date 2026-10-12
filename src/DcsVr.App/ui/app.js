@@ -943,7 +943,8 @@ function updateWorkflow() {
   const blocked = busy || !profile || !state || ['invalid','running'].includes(mode);
   $('launch').disabled = blocked;
   // Apply without launching has nothing to do while the draft is the applied profile, unless Pimax Play changed.
-  $('apply').disabled = blocked || (mode === 'ready' && !state.foveaChanged);
+  // ... and unless this version installs updated components (state.componentsChanged).
+  $('apply').disabled = blocked || (mode === 'ready' && !state.foveaChanged && !state.componentsChanged);
   $('reviewPlan').disabled = busy || hasInvalid || !profile;
   $('openRecovery').hidden = !state?.originals?.count; $('openRecovery').disabled = busy || mode === 'running';
   $('forceCloseDcs').hidden = !state?.dcsRunning; $('forceCloseDcs').disabled = busy;
@@ -1034,7 +1035,7 @@ function renderDashboard() {
   const mode = launchState(), items = checkItems(), fix = items.filter(c => c.group === 'fix').length, check = items.filter(c => c.group === 'check').length;
   const titles = {running:'DCS is running', ready:'Ready to fly', changes:'Changes apply at launch', invalid:'Check numeric values'};
   const details = {running:'Close DCS to change the configuration. The flight summary appears here when it exits.',
-    ready:state.foveaChanged ? state.foveaChanged : 'The applied profile matches this draft. Launch DCS starts it as it is.', changes:state.appliedDraft ? 'You changed settings since the last launch. Launch DCS applies them.' : 'Nothing is applied yet. Launch DCS backs up the original files, then applies this.',
+    ready:state.foveaChanged ? state.foveaChanged : state.componentsChanged ? `This version of DCS Control installs updated components (${state.componentsChanged}): Launch DCS or Apply without launching installs them.` : 'The applied profile matches this draft. Launch DCS starts it as it is.', changes:state.appliedDraft ? 'You changed settings since the last launch. Launch DCS applies them.' : 'Nothing is applied yet. Launch DCS backs up the original files, then applies this.',
     invalid:'Correct the marked values before launching.'};
   const chips = [fix ? `<button class="dash-chip fix" data-open-page="diagnostics">${fix} must fix</button>` : '', check ? `<button class="dash-chip check" data-open-page="diagnostics">${check} to check yourself</button>` : '', !fix && !check ? '<button class="dash-chip ok" data-open-page="diagnostics">Nothing to fix</button>' : ''].join('');
   const reset = state.appliedDraft && mode === 'changes' ? '<button class="link-button" data-reset-applied="1">Undo changes</button>' : '';
