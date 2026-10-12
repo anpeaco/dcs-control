@@ -627,6 +627,21 @@ Test("Last flight: OFXR's frame_load gives DCS's CPU and GPU time per frame, wha
     Require(LastFlight.ParseOfxr(Load(_ => (36000, 30000, true)))!.Load is { Limit: "gpu", HeadroomMs: -2.7 }, "past the slot; the GPU decides first");
     Require(LastFlight.ParseOfxr(Load(_ => (18000, 0, false)))!.Load is { GpuP50Ms: null, GpuP90Ms: null, DcsGpuShareP50: null, GpuShareP90: null, Limit: "headroom" }, "no GPU readings");
     Require(LastFlight.ParseOfxr(Load(_ => (18000, 12000, true)).Where(l => !l.Contains("frame_load")))!.Load is null, "an OFXR without 0017 has no load");
+    // Hitch signals: counted over the flying seconds only (the one at 5 s, before flight, is not).
+    var hitchLines = Load(_ => (18000, 12000, true));
+    hitchLines.AddRange([
+        "seq=9 ms=5000.000 tid=1 phase=I op=d3d11_bridge result=9 dur_us=0 a=1 b=2 c=1",
+        "seq=9 ms=20000.000 tid=1 phase=I op=d3d11_bridge result=9 dur_us=0 a=1 b=2 c=2",
+        "seq=9 ms=26000.000 tid=1 phase=I op=d3d11_bridge result=10 dur_us=0 a=1 b=2 c=5000",
+        "seq=9 ms=30000.000 tid=1 phase=I op=d3d11_bridge result=15 dur_us=0 a=1 b=0 c=0",
+        "seq=9 ms=30010.000 tid=1 phase=I op=d3d11_bridge result=15 dur_us=0 a=1 b=1 c=0",
+        "seq=9 ms=31000.000 tid=1 phase=I op=d3d11_bridge result=13 dur_us=0 a=1 b=1 c=0",
+        "seq=9 ms=40000.000 tid=1 phase=I op=continuity_reset result=0 dur_us=0 a=1 b=0 c=0",
+        "seq=9 ms=41000.000 tid=2 phase=I op=presenter_transition result=402 dur_us=0 a=1 b=0 c=0",
+        "seq=9 ms=41010.000 tid=2 phase=I op=presenter_transition result=403 dur_us=0 a=1 b=0 c=0"]);
+    Require(LastFlight.ParseOfxr(hitchLines)!.Hitches is { Seconds: 60, RuntimeImagesMade: 1, RuntimeImagesGivenBack: 1, InPlaceWaits: 2, ContinuityResets: 1, UnwrittenHandovers: 1 },
+        "hitch signals over the flying seconds");
+    Require(spare.Hitches is { RuntimeImagesMade: 0, RuntimeImagesGivenBack: 0, InPlaceWaits: 0, ContinuityResets: 0, UnwrittenHandovers: 0 }, "none logged");
     // The engine switch at 45 s: CPU 20 ms with the optimizations on, 15 ms off.
     var ofxrStart = new DateTime(2026, 10, 5, 19, 0, 0, DateTimeKind.Local);
     var switched = LastFlight.ParseEngineSwitches(["19:00:00.500 DcsQvCull loader started", "19:00:45.000 hotkey: engine optimizations OFF"], ofxrStart, ofxrStart);
@@ -2052,6 +2067,24 @@ Test("Topology parses the 9800X3D CPPC block", () =>
     Require(topo.VrRuntimeCores.SequenceEqual(new[] { 10, 11, 0, 1, 12, 13, 14, 15 }));
     Require(topo.BackgroundCores.SequenceEqual(new[] { 14, 15 })); // lowest performance class, at least two, never all
 });
+// DCS's real header on a single-CCD Ryzen: one L3 cache, one efficiency class (the CPPC block alone is above).
+const string Ryzen9800X3DDcsLog = "CPU: AMD Ryzen 7 9800X3D 8-Core Processor            [1x L3 caches]\n" +
+    "all CPU cores have the same efficiency class 0\nCPU cores have different performance classes: [0-6]\n" + Ryzen9800X3DCpuInfo;
+Test("Topology: a single-CCD CPU (one L3 cache, one efficiency class) has no ranking", () =>
+{
+    Require(CpuTopology.UniformCpu(Ryzen9800X3DDcsLog) && CpuTopology.ParseDcsLog(Ryzen9800X3DDcsLog) is null);
+    // Two CCDs (7950X3D): the classes are real, the ranking stays.
+    var twoCcd = Ryzen9800X3DDcsLog.Replace("[1x L3 caches]", "[2x L3 caches]");
+    Require(!CpuTopology.UniformCpu(twoCcd) && CpuTopology.ParseDcsLog(twoCcd) is { HasRanking: true });
+    // Intel hybrid: more than one efficiency class.
+    var hybrid = Ryzen9800X3DDcsLog.Replace("all CPU cores have the same efficiency class 0", "CPU cores have different efficiency classes: [0-1]");
+    Require(!CpuTopology.UniformCpu(hybrid) && CpuTopology.ParseDcsLog(hybrid) is { HasRanking: true });
+    // Detect says why, and does not fall back to an older log or to Windows' CPU sets.
+    var log = PathPolicy.UnderRoot(root, "boost-uniform/Logs/dcs.log"); Directory.CreateDirectory(Path.GetDirectoryName(log)!);
+    File.WriteAllText(log, Ryzen9800X3DDcsLog);
+    var detected = CpuTopology.Detect(log);
+    Require(!detected.HasRanking && detected.Source == CoreRankingSource.None && detected.Description.Contains("one L3 cache"));
+});
 Test("Topology yields no ranking for a homogeneous CPU", () =>
 {
     Require(CpuTopology.ParseDcsLog("logical cores with performance class 0: {0, 1, 2, 3}\nrender cores: {0, 1, 2, 3}\ncommon cores: {}") is null);
@@ -2986,20 +3019,20 @@ Test("Quest 3 needs VDXR; another route's runtime is never used instead", () =>
 Test("Advanced OFXR settings: every key exists in the layer, defaults are the layer's, and the FPS counter takes any corner", () =>
 {
     var ini = ConfigurationWriters.Ofxr(new() { FrameGen = FrameGeneration.Nvidia });
-    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "single_swapchain_rings=1", "capture_at_end_frame=1", "position=off" })
+    foreach (var expected in new[] { "own_binding_queue=1", "display_time_correction=1", "adaptive_probe=1", "late_frame_skip=0", "visibility_mask=1", "history_in_place=1", "lazy_runtime_swapchains=1", "single_swapchain_rings=1", "capture_at_end_frame=1", "lazy_runtime_reclaim_ms=0", "in_place_spare_image=1", "position=off" })
         Require(ini.Contains(expected), expected);
     var source = File.ReadAllText(Path.Combine(workspace, "external/ofxr-djules75/src/common/implicit_layer.cpp"));
     foreach (var key in ini.Split('\n').Select(l => l.Trim()).Where(l => l.Contains('=') && !l.StartsWith('[')).Select(l => l.Split('=')[0]).Except(["max_file_mb", "flush_each_event", "logging_enabled", "position", "enabled", "motion_vectors"]))
         Require(source.Contains("L\"" + key + "\"", StringComparison.Ordinal), key + " is read by OFXR");
-    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, OfxrSingleRings = false, OfxrCaptureAtEndFrame = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
+    var tuned = new VrProfile { FrameGen = FrameGeneration.FidelityFx, OfxrOwnBindingQueue = false, OfxrDisplayTimeCorrection = false, OfxrAdaptiveProbe = false, OfxrLateFrameSkip = true, OfxrVisibilityMask = false, OfxrHistoryInPlace = false, OfxrLazySwapchains = false, OfxrSingleRings = false, OfxrCaptureAtEndFrame = false, OfxrKeepRuntimeImages = false, OfxrInPlaceSpareImage = false, ShowOverlay = true, OverlayPosition = OverlayCorner.LowerLeft };
     var written = ConfigurationWriters.Ofxr(tuned);
-    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "single_swapchain_rings=0", "capture_at_end_frame=0", "position=lower_left" })
+    foreach (var expected in new[] { "own_binding_queue=0", "display_time_correction=0", "adaptive_probe=0", "late_frame_skip=1", "visibility_mask=0", "history_in_place=0", "lazy_runtime_swapchains=0", "single_swapchain_rings=0", "capture_at_end_frame=0", "lazy_runtime_reclaim_ms=5000", "in_place_spare_image=0", "position=lower_left" })
         Require(written.Contains(expected), expected);
     foreach (var (corner, value) in new[] { (OverlayCorner.UpperRight, "upper_right"), (OverlayCorner.UpperLeft, "upper_left"), (OverlayCorner.LowerRight, "lower_right") })
         Require(ConfigurationWriters.Ofxr(tuned with { OverlayPosition = corner }).Contains("position=" + value), value);
     Require(JsonData.Deserialize<VrProfile>(JsonData.Serialize(tuned)) == tuned);
     var older = System.Text.Json.Nodes.JsonNode.Parse(JsonData.Serialize(new VrProfile()))!.AsObject();
-    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains", "ofxrSingleRings", "ofxrCaptureAtEndFrame" }) Require(older.Remove(name), name);
+    foreach (var name in new[] { "overlayPosition", "ofxrOwnBindingQueue", "ofxrDisplayTimeCorrection", "ofxrAdaptiveProbe", "ofxrLateFrameSkip", "ofxrVisibilityMask", "ofxrHistoryInPlace", "ofxrLazySwapchains", "ofxrSingleRings", "ofxrCaptureAtEndFrame", "ofxrKeepRuntimeImages", "ofxrInPlaceSpareImage" }) Require(older.Remove(name), name);
     Require(JsonData.Deserialize<VrProfile>(older.ToJsonString()) == new VrProfile(), "a profile saved before these settings loads with the layer's defaults");
     Require(ProfileValidation.Validate(new() { OverlayPosition = (OverlayCorner)9 }).Any(i => i.Code == "overlay-position"));
 });

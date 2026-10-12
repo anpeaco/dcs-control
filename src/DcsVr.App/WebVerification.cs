@@ -43,7 +43,10 @@ internal static class WebVerification
                      // DCS Control's 0017: DCS's CPU time 14 ms with the optimizations on and 19 ms off, GPU 17.5 ms.
                      FormattableString.Invariant($"seq={20000 + i} ms={ms + 11:F3} tid=31660 phase=I op=frame_load result=1 dur_us=0 a={(ms < 160000 ? 14000 : 19000)} b=17500 c={22222UL | (610UL << 32) | (880UL << 48)}") };
              }),
-             FormattableString.Invariant($"seq=40000 ms=150000.000 tid=31660 phase=I op=vram_status result=1 dur_us=0 a={(29000UL << 32) | 17600} b={(32607UL << 32) | 19100} c=1")]);
+             FormattableString.Invariant($"seq=40000 ms=150000.000 tid=31660 phase=I op=vram_status result=1 dur_us=0 a={(29000UL << 32) | 17600} b={(32607UL << 32) | 19100} c=1"),
+             // Hitch signals: a headset image made in flight (a pause) and frame generation restarting once.
+             "seq=40001 ms=140000.000 tid=31660 phase=I op=d3d11_bridge result=9 dur_us=0 a=1 b=2 c=1",
+             "seq=40002 ms=140001.000 tid=31660 phase=I op=continuity_reset result=0 dur_us=0 a=1 b=0 c=0"]);
         var boost = Path.Combine(Directory.CreateDirectory(Path.Combine(root, "boost")).FullName, "status.json");
         // The flight helper's once-a-second record: DCS's main thread near a whole core, the GPU at 96%, a wallpaper
         // program on the GPU every reading.

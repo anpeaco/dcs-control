@@ -1,0 +1,157 @@
+diff --git a/include/xrfg/d3d11_bridge.hpp b/include/xrfg/d3d11_bridge.hpp
+--- a/include/xrfg/d3d11_bridge.hpp
++++ b/include/xrfg/d3d11_bridge.hpp
+@@ -96,7 +96,9 @@ public:
+ 
+     // The application is about to render into image `index` (its wait
+     // returned): its context waits, on the GPU, for the layer's last read of
+-    // the shared texture.
++    // the shared texture. DCS Control (0022): S_FALSE when a read on another
++    // queue (note_external_read) was still running, so the application's
++    // write of it now waits for that read on the GPU.
+     [[nodiscard]] HRESULT before_write(std::uint32_t index) noexcept;
+ 
+     // The application released image `index`: on the copy and resolve paths
+diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
+--- a/include/xrfg/implicit_layer.hpp
++++ b/include/xrfg/implicit_layer.hpp
+@@ -220,6 +220,15 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
+ [[nodiscard]] std::uint32_t read_lazy_runtime_reclaim_ms(
+     const std::filesystem::path& module_directory) noexcept;
+ 
++// DCS Control (0022). `[ofxr] in_place_spare_image`: a lazy swapchain whose
++// history is read in place gets one more image than the runtime's, so the
++// application's next write of an image is less often held behind frame
++// generation's read of it. Off unless set to 1 (the application then sees
++// one image more than the runtime's; DCS Control turns it on). Read once per
++// swapchain.
++[[nodiscard]] bool read_in_place_spare_image(
++    const std::filesystem::path& module_directory) noexcept;
++
+ // DCS VR Control (0008). `[ofxr] history_in_place`: on such a lazy
+ // swapchain, frame generation reads the application's frames straight from
+ // the bridge's shared textures instead of copying each into a history ring
+diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
+--- a/src/common/implicit_layer.cpp
++++ b/src/common/implicit_layer.cpp
+@@ -500,6 +500,10 @@ bool read_history_in_place(const std::filesystem::path& module_directory) noexce
+     return read_ofxr_switch(module_directory, L"history_in_place", true);
+ }
+ 
++bool read_in_place_spare_image(const std::filesystem::path& module_directory) noexcept {
++    return read_ofxr_switch(module_directory, L"in_place_spare_image", false);
++}
++
+ bool read_visibility_mask(const std::filesystem::path& module_directory) noexcept {
+     return read_ofxr_switch(module_directory, L"visibility_mask", true);
+ }
+diff --git a/src/d3d11/d3d11_bridge.cpp b/src/d3d11/d3d11_bridge.cpp
+--- a/src/d3d11/d3d11_bridge.cpp
++++ b/src/d3d11/d3d11_bridge.cpp
+@@ -952,6 +952,7 @@ struct D3D11BridgeSwapchain::Impl {
+             return E_INVALIDARG;
+         }
+         // DCS VR Control (0008): a read on another queue still running.
++        bool external_wait = false;
+         if (index < external_reads.size() && external_reads[index].fence) {
+             ExternalRead read = std::move(external_reads[index]);
+             external_reads[index] = {};
+@@ -976,17 +977,19 @@ struct D3D11BridgeSwapchain::Impl {
+                     enabled = false;
+                     return result;
+                 }
++                external_wait = true;
+             }
+         }
+         if (path == D3D11BridgePath::depth_private || last_read[index] == 0) {
+-            return S_OK;
++            return external_wait ? S_FALSE : S_OK;
+         }
+         const HRESULT result =
+             d3d11_context4->Wait(d3d11_fence.Get(), last_read[index]);
+         if (FAILED(result)) {
+             enabled = false;
++            return result;
+         }
+-        return result;
++        return external_wait ? S_FALSE : S_OK; // DCS Control (0022)
+     }
+ 
+     [[nodiscard]] HRESULT wait_for_idle() noexcept {
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -7003,8 +7003,20 @@ XrResult layer_create_swapchain_impl(
+                 }
+             } catch (...) {
+             }
++            // DCS Control (0022): with the history read in place, one image
++            // more than the runtime's (`[ofxr] in_place_spare_image`): with
++            // only the runtime's count, the image the application writes
++            // next is often the one the previous pair's synthesis is still
++            // reading, and its write then waits for it on the GPU
++            // (d3d11_bridge result=15 counts those waits).
++            const bool in_place =
++                xrfg::implicit_layer::read_history_in_place(current_layer_directory());
++            const std::uint32_t spare = in_place &&
++                    xrfg::implicit_layer::read_in_place_spare_image(current_layer_directory())
++                ? 1U
++                : 0U;
+             if (registered) {
+-                lazy_result = bridge->make_virtual(0);
++                lazy_result = bridge->make_virtual(spare);
+                 if (FAILED(lazy_result)) {
+                     std::scoped_lock lock(g_state_mutex);
+                     g_swapchains.erase(own_handle);
+@@ -7019,8 +7031,7 @@ XrResult layer_create_swapchain_impl(
+                 runtime_images.clear();
+                 static_cast<void>(state->dispatch->destroy_swapchain(created_swapchain));
+                 swapchain_state->lazy.active = true;
+-                swapchain_state->lazy.history_in_place =
+-                    xrfg::implicit_layer::read_history_in_place(current_layer_directory());
++                swapchain_state->lazy.history_in_place = in_place;
+                 swapchain_state->handle = own_handle;
+                 state->lazy_swapchain_count.fetch_add(1, std::memory_order_acq_rel);
+                 // 8: lazy. a the application's handle, b the images it sees
+@@ -7917,8 +7928,16 @@ XrResult layer_wait_swapchain_image_impl(
+         }
+         const std::uint32_t waited_index =
+             state->acquired_indices[state->waited_count];
+-        if (state->bridge) {
+-            static_cast<void>(state->bridge->before_write(waited_index));
++        if (state->bridge &&
++            state->bridge->before_write(waited_index) == S_FALSE) {
++            // DCS Control (0022): 15, the application's write of this image
++            // waits on the GPU for frame generation's in-place read of it.
++            // a the application's handle, b the image.
++            xrfg::bridge_flight_logger().event(
++                xrfg::BridgeFlightOperation::d3d11_bridge,
++                15,
++                handle_value(swapchain),
++                waited_index);
+         }
+         ++state->waited_count;
+         return XR_SUCCESS;
+diff --git a/tests/d3d11_bridge_tests.cpp b/tests/d3d11_bridge_tests.cpp
+--- a/tests/d3d11_bridge_tests.cpp
++++ b/tests/d3d11_bridge_tests.cpp
+@@ -230,6 +230,19 @@ void test_direct(const Devices& devices) {
+     // Image 0 was never released and stays untouched.
+     expect(read_back(devices, runtime[0].Get(), false, &bytes, &pitch), "direct: readback 0");
+     expect(!bytes.empty() && bytes[0] == 0, "direct: an unreleased image is untouched");
++    // DCS Control (0022): before_write says when a read on another queue was
++    // still running (S_FALSE), and not when it had completed.
++    ComPtr<ID3D12Fence> reader;
++    expect(SUCCEEDED(devices.d3d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&reader))),
++        "direct: reader fence");
++    if (reader) {
++        bridge.note_external_read(0, reader.Get(), 1);
++        expect(bridge.before_write(0) == S_FALSE, "direct: a running external read is reported");
++        expect(SUCCEEDED(reader->Signal(1)), "direct: external read completes");
++        expect(SUCCEEDED(bridge.wait_for_idle()), "direct: idle after the external read");
++        bridge.note_external_read(0, reader.Get(), 1);
++        expect(bridge.before_write(0) == S_OK, "direct: a completed external read is not a wait");
++    }
+ }
+ 
+ // Cyberpunk 2077 asks for four mip levels on its colour swapchains, and

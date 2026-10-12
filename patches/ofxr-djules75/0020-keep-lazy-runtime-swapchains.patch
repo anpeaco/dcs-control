@@ -1,0 +1,97 @@
+diff --git a/include/xrfg/implicit_layer.hpp b/include/xrfg/implicit_layer.hpp
+--- a/include/xrfg/implicit_layer.hpp
++++ b/include/xrfg/implicit_layer.hpp
+@@ -213,8 +213,8 @@ inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shippin
+ // shared textures, generation shows them through the layer's private
+ // swapchains, and a runtime swapchain is made only for a frame that names
+ // the application's swapchain directly (and given back once none has for
+-// `lazy_runtime_reclaim_ms`, 5000 by default). On unless set to 0. Read once
+-// per session.
++// `lazy_runtime_reclaim_ms`, 5000 by default; DCS Control (0020): 0 keeps it
++// once made). On unless set to 0. Read once per session.
+ [[nodiscard]] bool read_lazy_runtime_swapchains(
+     const std::filesystem::path& module_directory) noexcept;
+ [[nodiscard]] std::uint32_t read_lazy_runtime_reclaim_ms(
+diff --git a/src/common/implicit_layer.cpp b/src/common/implicit_layer.cpp
+--- a/src/common/implicit_layer.cpp
++++ b/src/common/implicit_layer.cpp
+@@ -478,11 +478,16 @@ std::uint32_t read_lazy_runtime_reclaim_ms(
+         const auto ini_path = module_directory / L"ofxr_bridge.ini";
+         const UINT value = GetPrivateProfileIntW(
+             L"ofxr", L"lazy_runtime_reclaim_ms", kDefault, ini_path.c_str());
+-        // DCS Control (0016): 0 or a negative value (read as a huge UINT)
+-        // would reclaim at once or never; out of range means the default.
+-        // (100, not more: the layer tests reclaim after 200 ms.)
++        // DCS Control (0016): a negative value (read as a huge UINT) or one
++        // out of range means the default. (100, not more: the layer tests
++        // reclaim after 200 ms.)
++        // DCS Control (0020): 0 = never give a runtime swapchain back once
++        // made (see reclaim_lazy_runtimes).
+         constexpr UINT kMinimum = 100;
+         constexpr UINT kMaximum = 600000;
++        if (value == 0) {
++            return 0;
++        }
+         return value < kMinimum || value > kMaximum
+             ? kDefault
+             : static_cast<std::uint32_t>(value);
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -14965,9 +14965,18 @@ void update_bridged_copy_deferral(
+ // the application names its swapchain in every frame, and whether the frame
+ // goes down as its own is decided later; if it does, catch_up_lazy makes the
+ // runtime swapchain again. Logged as d3d11_bridge result=10.
++//
++// DCS Control (0020): a reclaim of 0 (`lazy_runtime_reclaim_ms=0`) never
++// gives one back. Each give-back was followed, at the next frame that went
++// down as the application's own (a pause, a menu, generation stepping aside
++// for a hitch), by an xrCreateSwapchain plus a bounded image wait on the
++// application's frame thread: six of each in a 6-minute DCS flight on
++// Virtual Desktop. Kept, it costs the runtime images' VRAM from the first
++// such frame on and is made at most once.
+ void reclaim_lazy_runtimes(const std::shared_ptr<SessionState>& state) noexcept {
+     try {
+-        if (state->lazy_swapchain_count.load(std::memory_order_acquire) == 0) {
++        if (state->lazy_swapchain_count.load(std::memory_order_acquire) == 0 ||
++            state->lazy_runtime_reclaim.count() == 0) {
+             return;
+         }
+         const auto now = std::chrono::steady_clock::now();
+diff --git a/tests/standalone_launcher_tests.cpp b/tests/standalone_launcher_tests.cpp
+--- a/tests/standalone_launcher_tests.cpp
++++ b/tests/standalone_launcher_tests.cpp
+@@ -6,8 +6,10 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <iostream>
++#include <initializer_list>
+ #include <iterator>
+ #include <string>
++#include <utility>
+ 
+ namespace {
+ 
+@@ -290,6 +292,22 @@ int main() {
+             loaded.input_scale == xrfg::implicit_layer::ConfiguredNvidiaInputScale::half &&
+             !loaded.bidirectional;
+     }
++    // DCS Control (0020): lazy_runtime_reclaim_ms, 0 = keep.
++    bool reclaim_parsed = true;
++    for (const auto& [text, expected] : std::initializer_list<std::pair<const char*, std::uint32_t>>{
++             {"lazy_runtime_reclaim_ms=0\n", 0u}, {"lazy_runtime_reclaim_ms=200\n", 200u},
++             {"lazy_runtime_reclaim_ms=50\n", 5000u}, {"lazy_runtime_reclaim_ms=-1\n", 5000u}, {"", 5000u}}) {
++        {
++            std::ofstream ini(backend_directory / L"ofxr_bridge.ini", std::ios::trunc);
++            ini << "[ofxr]\n" << text;
++        }
++        reclaim_parsed = reclaim_parsed &&
++            xrfg::implicit_layer::read_lazy_runtime_reclaim_ms(backend_directory) == expected;
++    }
++    if (!reclaim_parsed) {
++        std::cerr << "lazy_runtime_reclaim_ms parsing failed\n";
++        return 1;
++    }
+     std::error_code cleanup_error;
+     std::filesystem::remove_all(backend_directory, cleanup_error);
+     if (!backend_from_ini || !preset_round_trips ||

@@ -12,6 +12,12 @@
 - **3× with fewer headset images fixed**: in 3×, OFXR's VRAM-saving mode wrote each frame's two generated images into the same two textures the frame before had used. Under GPU load it then refused most frames and backed off for longer each time: in a test with the GPU at its limit, 78 generated frames out of 950. It now gives 3× four textures (946 of 950 in the same test).
 - **Per-frame CPU and GPU time** (the panel's load line and Last flight) come with this OFXR as well.
 
+**Fewer stalls on DCS's frame threads** (each change, how to check it after a flight and how to switch it back: [PERF_CHANGES.md](PERF_CHANGES.md)):
+- OFXR: the in-headset counter and panel no longer hold DCS's thread while the headset runtime takes a frame; the runtime's images for DCS's frames are kept once made instead of being destroyed and made again during flight (**Keep headset images once made**); OFXR's log is written by a background thread instead of on DCS's threads; with **Read frames in place**, DCS gets a spare image so its next frame need not wait for frame generation (**Spare image for in-place reading**).
+- Engine Optimizations: the terrain prefetch fix no longer puts DCS's terrain workers to sleep for a timer tick; DCS's render thread waits at most 2 ms (was 20 ms) for a shadow plan.
+- CPU Boost changes only DCS's priority on a single-CCD CPU such as the 9800X3D, where DCS's core classes are only boost-clock ranks; the flight helper asks Windows for every process's GPU time every 30 s instead of 5 s.
+- Last flight: a **Hitch signals** row counts what OFXR logged that holds a frame up while flying.
+
 # 0.5.5 preview
 
 **Terrain prefetch fix moved into Engine Optimizations**: the fix for DCS's terrain workers, which ask Windows to prefetch the same memory ranges about a million times a second, now runs inside the engine optimizations module instead of a separate DLL. It is an option on the Engine Optimizations page (Off, Observe, Skip repeats; Skip by default) and no longer part of CPU Boost. Measured in an A/B: about 4 % less DCS CPU, more on CPU-bound scenes.

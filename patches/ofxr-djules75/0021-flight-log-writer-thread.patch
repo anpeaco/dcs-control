@@ -1,0 +1,533 @@
+diff --git a/include/xrfg/bridge_flight_logger.hpp b/include/xrfg/bridge_flight_logger.hpp
+--- a/include/xrfg/bridge_flight_logger.hpp
++++ b/include/xrfg/bridge_flight_logger.hpp
+@@ -405,6 +405,20 @@ public:
+     // that wraps begins with them again.
+     void follow_setting() noexcept;
+ 
++    // DCS Control (0021): while a writer is attached, records are formatted
++    // on the calling thread and queued, and one background thread writes
++    // them to the file (every 50 ms, sooner past 64 KB) and follows the
++    // setting in follow_setting's place; the game's frame threads make no
++    // file call. The layer attaches one per session, from xrCreateSession to
++    // xrDestroySession, and detach_writer(true) at xrDestroyInstance stops it
++    // whatever the count, so it never outlives the instance (and never runs
++    // when the module is unloaded). Without one - before a session, after it,
++    // and with `flush_each_event=1` - records are written synchronously as
++    // before, which is what survives a crash. Detaching writes everything
++    // queued before it returns.
++    void attach_writer() noexcept;
++    void detach_writer(bool all = false) noexcept;
++
+     // Writing to a file now. False while only the session records are kept.
+     [[nodiscard]] bool enabled() const noexcept;
+     // The session records are being kept, so the code that produces one runs
+diff --git a/src/layer/bridge_flight_logger.cpp b/src/layer/bridge_flight_logger.cpp
+--- a/src/layer/bridge_flight_logger.cpp
++++ b/src/layer/bridge_flight_logger.cpp
+@@ -5,6 +5,8 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <chrono>
++#include <condition_variable>
+ #include <cstdio>
+ #include <cwchar>
+ #include <deque>
+@@ -12,6 +14,8 @@
+ #include <mutex>
+ #include <string>
+ #include <system_error>
++#include <thread>
++#include <utility>
+ #include <vector>
+ 
+ namespace xrfg {
+@@ -359,6 +363,28 @@ struct BridgeFlightLogger::Impl {
+     bool pending_setting{}; // control_mutex
+     bool pending_setting_seen{}; // control_mutex
+ 
++    // DCS Control (0021): the background writer (see attach_writer).
++    static constexpr std::size_t kWakeBytes = 64 * 1024;
++    static constexpr std::size_t kChunkBytes = 64 * 1024;
++    static constexpr auto kWriterPeriod = std::chrono::milliseconds(50);
++    std::mutex writer_mutex;
++    unsigned writer_refs{}; // writer_mutex
++    std::thread writer; // writer_mutex
++    // Records go to the queue; read without a lock, decided under queue_mutex.
++    std::atomic<bool> queued_mode{};
++    // flush_each_event, readable without wrap_lock: it keeps writes synchronous.
++    std::atomic<bool> flush_mode{};
++    std::mutex queue_mutex;
++    std::condition_variable queue_ready;
++    std::string queue; // queue_mutex
++    // Session records in `queue` (offset, length), kept once written.
++    std::vector<std::pair<std::size_t, std::size_t>> queue_kept; // queue_mutex
++    bool writer_stop{}; // queue_mutex
++    // Held while a batch is taken from the queue and written, so a stop that
++    // drains finds every earlier record in the file. Timed: a writer killed
++    // at process exit while holding it must not hang the static destructor.
++    std::timed_mutex drain_mutex;
++
+     void keep(const char* line, std::size_t length) {
+         std::scoped_lock lock(kept_mutex);
+         if (kept_first.size() < kKeptFirst) {
+@@ -449,7 +475,44 @@ struct BridgeFlightLogger::Impl {
+             return;
+         }
+ 
+-        const auto span = static_cast<std::uint64_t>(length);
++        // DCS Control (0021): queued for the writer thread.
++        if (queued_mode.load(std::memory_order_acquire) &&
++            !flush_mode.load(std::memory_order_acquire)) {
++            bool queued = false;
++            bool wake = false;
++            try {
++                std::scoped_lock lock(queue_mutex);
++                if (!writer_stop) {
++                    if (kept) {
++                        queue_kept.emplace_back(queue.size(), static_cast<std::size_t>(length));
++                    }
++                    queue.append(line.data(), static_cast<std::size_t>(length));
++                    queued = true;
++                    wake = queue.size() >= kWakeBytes;
++                }
++            } catch (...) {
++            }
++            if (queued) {
++                if (wake) {
++                    queue_ready.notify_one();
++                }
++                return;
++            }
++        }
++        write_block(line.data(), static_cast<std::uint64_t>(length));
++        // After the file, so a wrap that rewrote the kept records while this
++        // one waited does not put it in the file twice.
++        if (kept) {
++            try {
++                keep(line.data(), static_cast<std::size_t>(length));
++            } catch (...) {
++            }
++        }
++    }
++
++    // Whole lines at the file's next free range: the synchronous write
++    // (every record without a writer thread, a batch of them with one).
++    void write_block(const char* data, std::uint64_t span) noexcept {
+         AcquireSRWLockShared(&wrap_lock);
+         // Asked again under the lock: a stop takes it exclusive, so the file
+         // is either open for the whole of this write or not written at all.
+@@ -493,7 +556,7 @@ struct BridgeFlightLogger::Impl {
+                 overlapped.hEvent = write_completion_event();
+                 DWORD written = 0;
+                 BOOL complete = WriteFile(
+-                    file, line.data(), static_cast<DWORD>(length), &written,
++                    file, data, static_cast<DWORD>(span), &written,
+                     &overlapped);
+                 if (!complete && GetLastError() == ERROR_IO_PENDING) {
+                     complete =
+@@ -505,13 +568,111 @@ struct BridgeFlightLogger::Impl {
+             }
+         }
+         ReleaseSRWLockShared(&wrap_lock);
+-        // After the file, so a wrap that rewrote the kept records while this
+-        // one waited does not put it in the file twice.
+-        if (kept) {
+-            try {
+-                keep(line.data(), static_cast<std::size_t>(length));
+-            } catch (...) {
++    }
++
++    // DCS Control (0021): writes what is queued, in chunks of whole lines.
++    void drain() noexcept {
++        std::unique_lock drain_lock(drain_mutex, std::defer_lock);
++        if (!drain_lock.try_lock_for(std::chrono::milliseconds(200))) {
++            return;
++        }
++        std::string batch;
++        std::vector<std::pair<std::size_t, std::size_t>> kept_ranges;
++        try {
++            std::scoped_lock lock(queue_mutex);
++            batch.swap(queue);
++            kept_ranges.swap(queue_kept);
++        } catch (...) {
++            return;
++        }
++        std::size_t at = 0;
++        while (at < batch.size()) {
++            std::size_t end = std::min(batch.size(), at + kChunkBytes);
++            if (end < batch.size()) {
++                const auto newline = batch.rfind('\n', end - 1);
++                end = newline != std::string::npos && newline >= at ? newline + 1 : end;
++            }
++            write_block(batch.data() + at, end - at);
++            at = end;
++        }
++        try {
++            for (const auto& [offset, length] : kept_ranges) {
++                keep(batch.data() + offset, length);
++            }
++        } catch (...) {
++        }
++        // The emptied buffer's capacity goes back to the queue.
++        try {
++            batch.clear();
++            std::scoped_lock lock(queue_mutex);
++            if (queue.empty()) {
++                queue.swap(batch);
++            }
++        } catch (...) {
++        }
++    }
++
++    void writer_main() noexcept {
++        try {
++            std::unique_lock lock(queue_mutex);
++            for (;;) {
++                queue_ready.wait_for(lock, kWriterPeriod, [&] {
++                    return writer_stop || queue.size() >= kWakeBytes;
++                });
++                const bool stopping = writer_stop;
++                lock.unlock();
++                drain();
++                if (!stopping) {
++                    poll();
++                }
++                lock.lock();
++                if (stopping && queue.empty()) {
++                    return;
++                }
++            }
++        } catch (...) {
++        }
++    }
++
++    // follow_setting's work: the ini at most four times a second.
++    void poll() noexcept {
++        try {
++            if (frequency.QuadPart <= 0) {
++                return;
++            }
++            LARGE_INTEGER now{};
++            if (!QueryPerformanceCounter(&now) ||
++                now.QuadPart < next_poll_counter.load(std::memory_order_relaxed)) {
++                return;
++            }
++            std::unique_lock lock(control_mutex, std::try_to_lock);
++            if (!lock.owns_lock()) {
++                return;
++            }
++            next_poll_counter.store(
++                now.QuadPart + frequency.QuadPart / 4,
++                std::memory_order_relaxed);
++            const bool wanted = GetPrivateProfileIntW(
++                kConfigurationSection,
++                L"logging_enabled",
++                0,
++                config_path.c_str()) != 0;
++            if (wanted == active.load(std::memory_order_acquire)) {
++                pending_setting_seen = false;
++                return;
+             }
++            if (!pending_setting_seen || pending_setting != wanted) {
++                pending_setting = wanted;
++                pending_setting_seen = true;
++                return;
++            }
++            pending_setting_seen = false;
++            if (wanted) {
++                start();
++            } else {
++                stop();
++            }
++        } catch (...) {
+         }
+     }
+ 
+@@ -545,6 +706,7 @@ struct BridgeFlightLogger::Impl {
+             path = new_path;
+             maximum_bytes = static_cast<std::uint64_t>(maximum_mb) * kMegabyte;
+             flush_each_event = flush;
++            flush_mode.store(flush, std::memory_order_release);
+             written = write_kept(&dropped);
+             active.store(true, std::memory_order_release);
+             ReleaseSRWLockExclusive(&wrap_lock);
+@@ -568,6 +730,8 @@ struct BridgeFlightLogger::Impl {
+         write(
+             next_sequence.fetch_add(1, std::memory_order_relaxed),
+             now.QuadPart, 'I', BridgeFlightOperation::recording, 0, 0, 0, 0, 0);
++        // DCS Control (0021): what the writer thread has not written yet.
++        drain();
+         // Exclusive, so this waits out any write still inside the shared
+         // section before the handle it is writing through is closed.
+         AcquireSRWLockExclusive(&wrap_lock);
+@@ -646,10 +810,32 @@ void BridgeFlightLogger::shutdown() noexcept {
+             return;
+         }
+         event(BridgeFlightOperation::logger, 0);
++        // DCS Control (0021): normally stopped at xrDestroyInstance. Here,
++        // from a static destructor, a thread is never waited for: at process
++        // exit it is already gone, and the queue is written below.
++        bool writer_left = false;
++        {
++            std::scoped_lock writer_lock(impl_->writer_mutex);
++            impl_->queued_mode.store(false, std::memory_order_release);
++            {
++                std::scoped_lock lock(impl_->queue_mutex);
++                impl_->writer_stop = true;
++            }
++            if (impl_->writer.joinable()) {
++                impl_->writer.detach();
++                writer_left = true;
++            }
++            impl_->writer_refs = 0;
++        }
+         {
+             std::scoped_lock lock(impl_->control_mutex);
+             impl_->stop();
+         }
++        if (writer_left) {
++            // Never freed under a thread that may still be running.
++            static_cast<void>(impl_.release());
++            return;
++        }
+         impl_.reset();
+     } catch (...) {
+         impl_.reset();
+@@ -657,43 +843,54 @@ void BridgeFlightLogger::shutdown() noexcept {
+ }
+ 
+ void BridgeFlightLogger::follow_setting() noexcept {
++    // DCS Control (0021): the writer thread follows it while there is one.
++    if (!impl_ || impl_->queued_mode.load(std::memory_order_acquire)) {
++        return;
++    }
++    impl_->poll();
++}
++
++void BridgeFlightLogger::attach_writer() noexcept {
++    if (!impl_) {
++        return;
++    }
+     try {
+-        if (!impl_ || impl_->frequency.QuadPart <= 0) {
+-            return;
+-        }
+-        LARGE_INTEGER now{};
+-        if (!QueryPerformanceCounter(&now) ||
+-            now.QuadPart <
+-                impl_->next_poll_counter.load(std::memory_order_relaxed)) {
++        std::scoped_lock writer_lock(impl_->writer_mutex);
++        if (impl_->writer_refs > 0) {
++            ++impl_->writer_refs;
+             return;
+         }
+-        std::unique_lock lock(impl_->control_mutex, std::try_to_lock);
+-        if (!lock.owns_lock()) {
+-            return;
++        {
++            std::scoped_lock lock(impl_->queue_mutex);
++            impl_->writer_stop = false;
+         }
+-        impl_->next_poll_counter.store(
+-            now.QuadPart + impl_->frequency.QuadPart / 4,
+-            std::memory_order_relaxed);
+-        const bool wanted = GetPrivateProfileIntW(
+-            kConfigurationSection,
+-            L"logging_enabled",
+-            0,
+-            impl_->config_path.c_str()) != 0;
+-        if (wanted == impl_->active.load(std::memory_order_acquire)) {
+-            impl_->pending_setting_seen = false;
++        impl_->writer = std::thread([raw = impl_.get()] { raw->writer_main(); });
++        impl_->writer_refs = 1;
++        impl_->queued_mode.store(true, std::memory_order_release);
++    } catch (...) {
++    }
++}
++
++void BridgeFlightLogger::detach_writer(bool all) noexcept {
++    if (!impl_) {
++        return;
++    }
++    try {
++        std::scoped_lock writer_lock(impl_->writer_mutex);
++        if (impl_->writer_refs == 0 || (!all && --impl_->writer_refs > 0)) {
+             return;
+         }
+-        if (!impl_->pending_setting_seen || impl_->pending_setting != wanted) {
+-            impl_->pending_setting = wanted;
+-            impl_->pending_setting_seen = true;
+-            return;
++        impl_->writer_refs = 0;
++        impl_->queued_mode.store(false, std::memory_order_release);
++        {
++            std::scoped_lock lock(impl_->queue_mutex);
++            impl_->writer_stop = true;
+         }
+-        impl_->pending_setting_seen = false;
+-        if (wanted) {
+-            impl_->start();
+-        } else {
+-            impl_->stop();
++        impl_->queue_ready.notify_one();
++        if (impl_->writer.joinable()) {
++            impl_->writer.join();
+         }
++        impl_->drain();
+     } catch (...) {
+     }
+ }
+diff --git a/src/layer/openxr_layer.cpp b/src/layer/openxr_layer.cpp
+--- a/src/layer/openxr_layer.cpp
++++ b/src/layer/openxr_layer.cpp
+@@ -17074,6 +17074,10 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_destroy_instance(XrInstance instance) {
+         xrfg::BridgeFlightOperation::instance_destroy,
+         result,
+         handle_value(instance));
++    // DCS Control (0021): the log's writer thread never outlives the
++    // instance, whatever sessions the application left undestroyed: the
++    // loader may unload this module next.
++    xrfg::bridge_flight_logger().detach_writer(true);
+     return result;
+ }
+ 
+@@ -17093,6 +17097,11 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_create_session(
+         result,
+         handle_value(instance),
+         session && XR_SUCCEEDED(result) ? handle_value(*session) : 0);
++    // DCS Control (0021): the session's records are written off its frame
++    // threads (see BridgeFlightLogger::attach_writer).
++    if (XR_SUCCEEDED(result)) {
++        xrfg::bridge_flight_logger().attach_writer();
++    }
+     return result;
+ }
+ 
+@@ -17108,6 +17117,9 @@ XRAPI_ATTR XrResult XRAPI_CALL layer_destroy_session(XrSession session) {
+         xrfg::BridgeFlightOperation::session_destroy,
+         result,
+         handle_value(session));
++    if (XR_SUCCEEDED(result)) {
++        xrfg::bridge_flight_logger().detach_writer(); // DCS Control (0021)
++    }
+     return result;
+ }
+ 
+diff --git a/tests/bridge_flight_logger_tests.cpp b/tests/bridge_flight_logger_tests.cpp
+--- a/tests/bridge_flight_logger_tests.cpp
++++ b/tests/bridge_flight_logger_tests.cpp
+@@ -3,11 +3,14 @@
+ #include <windows.h>
+ 
+ #include <array>
++#include <cstdio>
+ #include <filesystem>
+ #include <fstream>
+ #include <iostream>
+ #include <stdexcept>
+ #include <string>
++#include <thread>
++#include <vector>
+ 
+ namespace fs = std::filesystem;
+ 
+@@ -331,6 +334,79 @@ int main(int argc, char** argv) {
+             log.find("op=frame_load result=1 dur_us=0 a=18540 b=15210 c=" +
+                 std::to_string(27780ULL | (548ULL << 32) | (642ULL << 48))) != std::string::npos,
+             "bridge log is missing the 0017 frame load record");
++        // DCS Control (0021): with a writer attached, records from several
++        // threads are all written, once each, and in each thread's order;
++        // detaching writes what was queued; and a writer still attached at
++        // shutdown neither hangs nor loses the queue.
++        {
++            const fs::path queued_directory = temporary.path / "queued";
++            fs::create_directories(queued_directory);
++            write(queued_directory / "ofxr_bridge.ini",
++                "[diagnostics]\r\nlogging_enabled=1\r\nmax_file_mb=16\r\nflush_each_event=0\r\n");
++            xrfg::BridgeFlightLogger queued;
++            queued.initialize(queued_directory);
++            const fs::path queued_path = queued.log_path();
++            queued.attach_writer();
++            queued.attach_writer(); // a second session
++            constexpr int kThreads = 4;
++            constexpr int kRecords = 5000;
++            std::vector<std::thread> threads;
++            for (int t = 0; t < kThreads; ++t) {
++                threads.emplace_back([&queued, t] {
++                    for (int i = 0; i < kRecords; ++i) {
++                        queued.event(xrfg::BridgeFlightOperation::frame_load, 2,
++                            static_cast<std::uint64_t>(t), static_cast<std::uint64_t>(i), 4242);
++                    }
++                });
++            }
++            for (auto& thread : threads) thread.join();
++            queued.detach_writer(); // the first session: still queued
++            queued.event(xrfg::BridgeFlightOperation::frame_load, 3, 1, 2, 4242);
++            queued.detach_writer(); // the last: everything written
++            const std::string after_detach = read(queued_path);
++            std::array<int, kThreads> next{};
++            bool ordered = true;
++            int count = 0;
++            for (std::size_t at = after_detach.find("result=2 dur_us=0 a="); at != std::string::npos;
++                 at = after_detach.find("result=2 dur_us=0 a=", at + 1)) {
++                unsigned t = 0, i = 0, c = 0;
++                if (std::sscanf(after_detach.c_str() + at, "result=2 dur_us=0 a=%u b=%u c=%u", &t, &i, &c) != 3 ||
++                    c != 4242 || t >= kThreads) {
++                    continue;
++                }
++                ordered = ordered && static_cast<int>(i) == next[t];
++                next[t] = static_cast<int>(i) + 1;
++                ++count;
++            }
++            require(count == kThreads * kRecords && ordered,
++                "queued records were lost, duplicated or reordered within a thread");
++            require(after_detach.find("op=frame_load result=3 dur_us=0 a=1 b=2 c=4242") != std::string::npos,
++                "a record queued before the last detach was not written");
++            queued.event(xrfg::BridgeFlightOperation::frame_load, 4, 5, 6, 4242);
++            require(read(queued_path).find("op=frame_load result=4 dur_us=0 a=5 b=6 c=4242") != std::string::npos,
++                "after the last detach a record must be written synchronously");
++            // The caller's cost per record, written and queued (printed, not
++            // checked: it depends on the disk and the machine).
++            const auto per_record_us = [&queued](int records) {
++                LARGE_INTEGER frequency{}, start{}, end{};
++                QueryPerformanceFrequency(&frequency);
++                QueryPerformanceCounter(&start);
++                for (int i = 0; i < records; ++i) {
++                    queued.event(xrfg::BridgeFlightOperation::frame_load, 6, 0, static_cast<std::uint64_t>(i), 4242);
++                }
++                QueryPerformanceCounter(&end);
++                return static_cast<double>(end.QuadPart - start.QuadPart) * 1.0e6 /
++                    static_cast<double>(frequency.QuadPart) / records;
++            };
++            const double synchronous_us = per_record_us(2000);
++            queued.attach_writer();
++            const double queued_us = per_record_us(2000);
++            std::cout << "Caller cost per record: written " << synchronous_us << " us, queued " << queued_us << " us\n";
++            queued.event(xrfg::BridgeFlightOperation::frame_load, 5, 7, 8, 4242);
++            queued.shutdown();
++            require(read(queued_path).find("op=frame_load result=5 dur_us=0 a=7 b=8 c=4242") != std::string::npos,
++                "shutdown with a writer attached lost the queue");
++        }
+         require(log.find("op=app_swapchain_acquire") == std::string::npos &&
+                     log.find("phase=B op=private_swapchain_wait") == std::string::npos &&
+                     log.find("phase=E op=private_swapchain_wait result=-1") != std::string::npos,
+diff --git a/tests/layer_manual_disarm_tests.cpp b/tests/layer_manual_disarm_tests.cpp
+--- a/tests/layer_manual_disarm_tests.cpp
++++ b/tests/layer_manual_disarm_tests.cpp
+@@ -292,6 +292,14 @@ int main(int argc, char** argv) {
+             }, "the recorder starts while the session runs");
+             // Long enough for a pair's GPU timing to be read back.
+             for (int i = 0; i < 16; ++i) { frame(); Sleep(10); }
++            // DCS Control (0021): records reach the file from the writer
++            // thread, up to 50 ms after they were made.
++            frames_until([&] {
++                const auto text = read(logs().at(0));
++                const auto on = text.find("op=recording result=1");
++                return on != std::string::npos &&
++                    text.find("op=synthesis_gpu_span", on) != std::string::npos;
++            }, "the GPU timings reach the file");
+             const auto first_path = logs().at(0);
+             const std::string first = read(first_path);
+             const auto switched_on = first.find("op=recording result=1");

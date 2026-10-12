@@ -1,0 +1,273 @@
+diff --git a/src/layer/openxr_fps_overlay.cpp b/src/layer/openxr_fps_overlay.cpp
+--- a/src/layer/openxr_fps_overlay.cpp
++++ b/src/layer/openxr_fps_overlay.cpp
+@@ -59,6 +59,26 @@ struct OpenXrFpsOverlay::Impl {
+     PFN_xrGetSystemProperties system_properties{};
+     std::filesystem::path ini;
+     mutable std::mutex mutex;
++    // DCS Control (0019): xrEndFrame never takes `mutex`, which the
++    // application thread holds while it redraws the overlay (an INI read and
++    // the panel rasterized every quarter second) and which the status setters
++    // take every frame. The presenter used to hold it across the runtime's
++    // xrEndFrame too, so a slow runtime frame call held up the application's
++    // next frame, and a redraw held up a synthetic's hand-over. `submit_mutex`
++    // (taken briefly, never while waiting) guards the frame counter and the
++    // layers end_frame adds, published under `mutex`; `surface_mutex` keeps
++    // the overlay's own swapchain calls out of an xrEndFrame that shows its
++    // images. Order: mutex, then surface_mutex or submit_mutex.
++    mutable std::mutex submit_mutex;
++    std::mutex surface_mutex;
++    struct Published {
++        bool number{}, panel{}, panel_visible{};
++        XrCompositionLayerQuad number_quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
++        XrCompositionLayerQuad panel_quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
++        std::uint32_t max_layers{};
++        std::optional<OverlayPlacement> marker;
++    };
++    Published published;
+     FpsCounter counter;
+     // Application frames, for the panel's app -> out comparison.
+     FpsCounter application_counter;
+@@ -175,6 +195,7 @@ struct OpenXrFpsOverlay::Impl {
+         if (surface.attempted) return surface.ready;
+         surface.attempted = true;
+         if (surface_width > max_width || surface_height > max_height) return false;
++        std::scoped_lock surface_lock(surface_mutex); // DCS Control (0019)
+         XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+         info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+             XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+@@ -266,7 +287,10 @@ struct OpenXrFpsOverlay::Impl {
+         XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+         space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+         space_info.poseInReferenceSpace.orientation.w = 1;
+-        if (XR_FAILED(create_space(session, &space_info, &space))) return false;
++        {
++            std::scoped_lock surface_lock(surface_mutex); // DCS Control (0019)
++            if (XR_FAILED(create_space(session, &space_info, &space))) return false;
++        }
+         event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+         if (!event) return false;
+         if (device11) {
+@@ -289,6 +313,7 @@ struct OpenXrFpsOverlay::Impl {
+     bool upload(Surface& surface, const std::vector<std::uint32_t>& pixels) {
+         if (surface.failed || !surface.ready) return false;
+         if (pixels.size() != static_cast<std::size_t>(surface.width) * surface.height) return false;
++        std::scoped_lock surface_lock(surface_mutex); // DCS Control (0019)
+         if (!surface.acquired) {
+             XrSwapchainImageAcquireInfo info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+             if (XR_FAILED(acquire(surface.swapchain, &info, &surface.index))) { surface.failed = true; return false; }
+@@ -411,6 +436,23 @@ struct OpenXrFpsOverlay::Impl {
+         inputs.engine = {true, engine_status()};
+     }
+ 
++    // DCS Control (0019): what end_frame adds and the presenter-side queries
++    // read, copied under `mutex` after every change to it.
++    void publish() {
++        Published next;
++        const bool usable = initialized && !disabled;
++        next.number = usable && number.image_valid && !number.failed && position != FpsOverlayPosition::off;
++        next.panel_visible = toggle.visible();
++        next.panel = usable && panel.ready && panel.image_valid && !panel.failed && next.panel_visible;
++        next.number_quad = number.quad;
++        next.panel_quad = panel.quad;
++        next.max_layers = max_layers;
++        if (!disabled && !number.failed && position != FpsOverlayPosition::off && placement_valid)
++            next.marker = placement;
++        std::scoped_lock lock(submit_mutex);
++        published = next;
++    }
++
+     void application_frame(const XrFrameEndInfo* info) {
+         const auto now = now_ns();
+         if (!info || info->type != XR_TYPE_FRAME_END_INFO) return;
+@@ -473,7 +515,7 @@ struct OpenXrFpsOverlay::Impl {
+         // head turns enough to move it off. Reproduced in Callisto Protocol,
+         // and reported as the counter vanishing, so rule it out before
+         // suspecting the upload path.
+-        auto snapshot = counter.snapshot(now);
++        auto snapshot = [&] { std::scoped_lock lock(submit_mutex); return counter.snapshot(now); }();
+         snapshot.paused = paused;
+         if (delivery) {
+             if (const auto received = delivery->delivered_fps(now)) {
+@@ -524,11 +566,16 @@ OpenXrFpsOverlay::OpenXrFpsOverlay(XrInstance instance, XrSession session, XrSys
+     if (!parse_diagnostic_hotkey(environment("DCSVR_ENGINE_HOTKEY"), impl_->engine_hotkey)) impl_->engine_hotkey = {};
+     if (!parse_diagnostic_hotkey(environment("DCSVR_PUPIL_HOTKEY"), impl_->pupil_hotkey)) impl_->pupil_hotkey = {};
+     impl_->toggle = DiagnosticToggle(environment("DCSVR_DIAG_OVERLAY") == "1");
++    impl_->publish(); // DCS Control (0019): diagnostic_visible() before the first frame
+ }
+ OpenXrFpsOverlay::~OpenXrFpsOverlay() = default;
+ 
+ void OpenXrFpsOverlay::application_frame(const XrFrameEndInfo* info) noexcept {
+-    try { std::scoped_lock lock(impl_->mutex); impl_->application_frame(info); }
++    try {
++        std::scoped_lock lock(impl_->mutex);
++        impl_->application_frame(info);
++        impl_->publish();
++    }
+     catch (...) { /* Overlay is optional: never fail the game's frame. */ }
+ }
+ void OpenXrFpsOverlay::set_generation_status(const GenerationStatus& status) noexcept {
+@@ -545,17 +592,18 @@ void OpenXrFpsOverlay::set_load_status(const LoadStatus& status) noexcept {
+     impl_->load_status = status;
+ }
+ bool OpenXrFpsOverlay::diagnostic_visible() const noexcept {
+-    std::scoped_lock lock(impl_->mutex);
+-    return impl_->toggle.visible();
++    std::scoped_lock lock(impl_->submit_mutex);
++    return impl_->published.panel_visible;
+ }
+ void OpenXrFpsOverlay::reset_metrics() noexcept {
+     std::scoped_lock lock(impl_->mutex);
+-    impl_->counter.reset();
++    { std::scoped_lock counter_lock(impl_->submit_mutex); impl_->counter.reset(); }
+     impl_->application_counter.reset();
+     impl_->number.image_valid = false;
+     impl_->panel.image_valid = false;
+     impl_->next_refresh = 0;
+     impl_->placement_valid = false;
++    impl_->publish();
+ }
+ 
+ void OpenXrFpsOverlay::set_display_period(std::int64_t period_ns) noexcept {
+@@ -574,49 +622,53 @@ void OpenXrFpsOverlay::suspend() noexcept {
+     impl_->disabled = true;
+     impl_->number.image_valid = false;
+     impl_->panel.image_valid = false;
+-    impl_->counter.reset();
++    { std::scoped_lock counter_lock(impl_->submit_mutex); impl_->counter.reset(); }
+     impl_->application_counter.reset();
++    impl_->publish();
+ }
+ 
+ FpsSnapshot OpenXrFpsOverlay::metrics() const noexcept {
+-    std::scoped_lock lock(impl_->mutex);
++    std::scoped_lock lock(impl_->submit_mutex);
+     return impl_->counter.snapshot(now_ns());
+ }
+ 
+ std::optional<OverlayPlacement> OpenXrFpsOverlay::marker_placement() const noexcept {
+-    std::scoped_lock lock(impl_->mutex);
+-    if (impl_->disabled || impl_->number.failed || impl_->position == FpsOverlayPosition::off ||
+-        !impl_->placement_valid)
+-        return std::nullopt;
+-    return impl_->placement;
++    std::scoped_lock lock(impl_->submit_mutex);
++    return impl_->published.marker;
+ }
+ 
++// DCS Control (0019): the overlay's state lock is not held here (see Impl's
++// submit_mutex); the layers come from the last published copy.
+ XrResult OpenXrFpsOverlay::end_frame(
+     const XrFrameEndInfo* info, bool synthetic, bool new_content) {
+-    std::scoped_lock lock(impl_->mutex);
++    auto& impl = *impl_;
++    Impl::Published published;
++    { std::scoped_lock lock(impl.submit_mutex); published = impl.published; }
+     std::array<const XrCompositionLayerBaseHeader*, 128> layers{};
+     XrFrameEndInfo composed{};
+     const bool nonempty = info && info->type == XR_TYPE_FRAME_END_INFO && info->layers && info->layerCount;
+     const XrFrameEndInfo* submitted = info;
+-    auto& impl = *impl_;
+-    const bool usable = nonempty && impl.initialized && !impl.disabled;
+-    const bool add_number = usable && impl.number.image_valid && !impl.number.failed &&
+-        impl.position != FpsOverlayPosition::off;
+-    const bool add_panel = usable && impl.panel.ready && impl.panel.image_valid && !impl.panel.failed &&
+-        impl.toggle.visible();
+-    std::uint32_t room = usable && info->layerCount < impl.max_layers ? impl.max_layers - info->layerCount : 0;
+-    if (room && (add_number || add_panel)) {
++    std::uint32_t room = nonempty && info->layerCount < published.max_layers ? published.max_layers - info->layerCount : 0;
++    if (room && (published.number || published.panel)) {
+         std::copy_n(info->layers, info->layerCount, layers.begin());
+         composed = *info; // Preserve every app layer, next chain and display time.
+         composed.layers = layers.data();
+         // The counter keeps its place; the panel goes on top when there is room for it.
+-        if (add_number && room) { layers[composed.layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&impl.number.quad); --room; }
+-        if (add_panel && room) { layers[composed.layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&impl.panel.quad); --room; }
++        if (published.number && room) { layers[composed.layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&published.number_quad); --room; }
++        if (published.panel && room) { layers[composed.layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&published.panel_quad); --room; }
+         submitted = &composed;
+     }
+-    const auto result = impl.downstream_end(impl.session, submitted);
+-    if (result == XR_SUCCESS && nonempty)
++    XrResult result{};
++    if (submitted == &composed) {
++        std::scoped_lock surface_lock(impl.surface_mutex);
++        result = impl.downstream_end(impl.session, submitted);
++    } else {
++        result = impl.downstream_end(impl.session, submitted);
++    }
++    if (result == XR_SUCCESS && nonempty) {
++        std::scoped_lock lock(impl.submit_mutex);
+         impl.counter.submitted(now_ns(), synthetic, new_content);
++    }
+     return result;
+ }
+ 
+diff --git a/tests/openxr_fps_overlay_tests.cpp b/tests/openxr_fps_overlay_tests.cpp
+--- a/tests/openxr_fps_overlay_tests.cpp
++++ b/tests/openxr_fps_overlay_tests.cpp
+@@ -4,6 +4,7 @@
+ #include <dxgi1_6.h>
+ #include <wrl/client.h>
+ #include <array>
++#include <atomic>
+ #include <chrono>
+ #include <cmath>
+ #include <cstring>
+@@ -48,6 +49,9 @@ const XrCompositionLayerBaseHeader* expected_layer{};
+ const void* expected_next{};
+ unsigned expected_count{1}, observed_count{};
+ XrPosef last_pose{};
++// DCS Control (0019): set, the runtime's xrEndFrame signals `end_entered` and
++// blocks until `end_leave` is set.
++HANDLE end_entered{}, end_leave{};
+ XrResult XRAPI_CALL create_space(XrSession, const XrReferenceSpaceCreateInfo* info, XrSpace* output) {
+     check(info->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_VIEW && info->poseInReferenceSpace.orientation.w == 1,
+           "overlay must own a VIEW space");
+@@ -111,6 +115,7 @@ XrResult XRAPI_CALL release(XrSwapchain, const XrSwapchainImageReleaseInfo*) {
+     ++releases; last_released = acquired_index; return XR_SUCCESS;
+ }
+ XrResult XRAPI_CALL end(XrSession, const XrFrameEndInfo* info) {
++    if (end_leave) { SetEvent(end_entered); WaitForSingleObject(end_leave, 10000); }
+     ++ends;
+     observed_count = info->layerCount;
+     check(info->next == expected_next, "lost frame next chain");
+@@ -253,6 +258,38 @@ int main(int argc, char** argv) {
+             overlay.application_frame(&info);
+             check(releases == release_count, "upload unthrottled");
+             check(overlay.end_frame(&info, true) == XR_SUCCESS && overlay.metrics().active, "successful synthetic not active");
++            // DCS Control (0019): while the runtime's xrEndFrame (with the
++            // counter in it) is blocked on the presenter thread, the
++            // application thread's status calls and queries still return.
++            {
++                end_entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++                end_leave = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++                check(end_entered && end_leave, "blocking end events");
++                std::thread presenter([&] { (void)overlay.end_frame(&info, true); });
++                const bool entered = WaitForSingleObject(end_entered, 5000) == WAIT_OBJECT_0;
++                std::atomic<bool> done{false};
++                std::thread application([&] {
++                    overlay.set_generation_status({});
++                    overlay.set_vram_status({}, false);
++                    overlay.set_load_status({});
++                    (void)overlay.metrics();
++                    (void)overlay.marker_placement();
++                    (void)overlay.diagnostic_visible();
++                    done = true;
++                });
++                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
++                while (!done && std::chrono::steady_clock::now() < deadline)
++                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
++                const bool unblocked = done;
++                SetEvent(end_leave);
++                presenter.join();
++                application.join();
++                CloseHandle(end_entered);
++                CloseHandle(end_leave);
++                end_entered = end_leave = nullptr;
++                check(entered && observed_count == 2, "blocking end did not carry the overlay");
++                check(unblocked, "a blocked runtime xrEndFrame held up the overlay's application-thread calls");
++            }
+             std::this_thread::sleep_for(std::chrono::milliseconds(260));
+             overlay.application_frame(&info);
+             check(overlay.end_frame(&info, false) == XR_SUCCESS && observed_count == 2, "original loses overlay");

@@ -51,6 +51,8 @@ public sealed partial record CpuTopology(
             try
             {
                 var head = ReadLogHead(log);
+                if (UniformCpu(head))
+                    return None("DCS reports one L3 cache and one efficiency class: its performance classes only rank the cores' boost clocks, so CPU affinity is not changed (" + log + ")");
                 if (ParseDcsLog(head) is { } fromLog) return fromLog with { Description = fromLog.Description + " (" + log + ")" };
                 // The newest log describes this CPU even when it gives no ranking (one performance class): an older log
                 // may come from the CPU before an upgrade, so it is not used.
@@ -99,14 +101,27 @@ public sealed partial record CpuTopology(
     private static partial Regex PerformanceClassLine();
     [GeneratedRegex(@"(common|render|IO|unavailable) cores: \{([\d, ]*)\}", RegexOptions.IgnoreCase)]
     private static partial Regex CoreSetLine();
+    [GeneratedRegex(@"\[(\d+)x L3 caches?\]", RegexOptions.IgnoreCase)]
+    private static partial Regex L3CacheLine();
+    [GeneratedRegex(@"all CPU cores have the same efficiency class", RegexOptions.IgnoreCase)]
+    private static partial Regex SameEfficiencyLine();
+
+    /// <summary>True when DCS's log says the CPU has one L3 cache and one efficiency class (a single-CCD Ryzen such as
+    /// the 9800X3D): its "performance classes" are then only CPPC's boost-clock ranking of identical cores, not faster
+    /// and slower cores. Confining the VR runtime to half of them and background apps to the lowest-ranked pair (which
+    /// lies inside the VR runtime's half) gains DCS nothing and crowds the headset's streamer.</summary>
+    public static bool UniformCpu(string text) =>
+        SameEfficiencyLine().IsMatch(text) && L3CacheLine().Match(text) is { Success: true } cache && cache.Groups[1].Value == "1";
 
     static IReadOnlyList<int> ParseSet(string body) =>
         body.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(token => int.TryParse(token, out var value) ? value : -1).Where(value => value >= 0).Distinct().ToArray();
 
-    /// <summary>Parses the "CPU info" block DCS writes; returns null when the log has no usable ranking.</summary>
+    /// <summary>Parses the "CPU info" block DCS writes; returns null when the log has no usable ranking (including a
+    /// <see cref="UniformCpu"/>).</summary>
     public static CpuTopology? ParseDcsLog(string text)
     {
+        if (UniformCpu(text)) return null;
         var classes = new SortedDictionary<int, IReadOnlyList<int>>();
         foreach (Match match in PerformanceClassLine().Matches(text))
         {

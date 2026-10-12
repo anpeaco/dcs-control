@@ -17,7 +17,8 @@ public sealed record FlightSources(string? DcsLog, string? PimaxLogDirectory = n
 /// <summary>A summary of the last DCS session, read from logs after DCS exits. Parts without a source are null.</summary>
 public sealed record FlightSummary(DateTimeOffset Start, DateTimeOffset End, bool Closed, int? DcsPid, HeadsetFrames? Headset, FramegenShare? Framegen,
     FrameTimes? FrameTime, NeuralState? Dlss5, BoostResult? Boost, PrefetchResult? Prefetch,
-    FrameCadence? Pacing = null, FramegenCost? FramegenCost = null, EngineComparison? EngineSwitch = null, FrameLoad? Load = null, MachineLoad? Machine = null)
+    FrameCadence? Pacing = null, FramegenCost? FramegenCost = null, EngineComparison? EngineSwitch = null, FrameLoad? Load = null, MachineLoad? Machine = null,
+    HitchSignals? Hitches = null)
 {
     public TimeSpan Duration => End - Start;
 }
@@ -86,6 +87,19 @@ public sealed record FrameLoad(double CpuP50Ms, double CpuP90Ms, double CpuP99Ms
     public static string Classify(double cpuP90, double? gpuP90, double slot) =>
         gpuP90 is { } g && g >= LimitShare * slot ? "gpu" : cpuP90 >= LimitShare * slot ? "cpu" : "headroom";
 }
+/// <summary>Events in OFXR's log that hold a frame up, over the flying seconds: the checks for the stutter fixes in
+/// docs/PERF_CHANGES.md.</summary>
+/// <param name="RuntimeImagesMade">d3d11_bridge result=9: a runtime swapchain for DCS's images made on DCS's frame
+/// thread (once per swapchain at most with fork patch 0020's "Keep headset images once made").</param>
+/// <param name="RuntimeImagesGivenBack">d3d11_bridge result=10: one destroyed after 5 s unused (none with 0020).</param>
+/// <param name="InPlaceWaits">d3d11_bridge result=15 (fork patch 0022): DCS's write of an image waited on the GPU for
+/// frame generation still reading it.</param>
+/// <param name="ContinuityResets">continuity_reset: frame generation started over (a frame or two without
+/// generated frames).</param>
+/// <param name="UnwrittenHandovers">presenter_transition result=402: a generated frame handed to the runtime before
+/// it was drawn.</param>
+public sealed record HitchSignals(int Seconds, int RuntimeImagesMade, int RuntimeImagesGivenBack, int InPlaceWaits, int ContinuityResets,
+    int UnwrittenHandovers);
 /// <summary>What the PC did during the flight, from the flight helper's once-a-second record (<see cref="FlightMonitor"/>),
 /// over the flying seconds when OFXR's log gives them.</summary>
 /// <param name="CpuP90">The whole CPU's use, p90 of the seconds, percent.</param>
@@ -131,7 +145,7 @@ public static partial class LastFlight
             boost?.Result,
             ReadPrefetch(PrefetchLog(log), start, end),
             ofxr?.Pacing, ofxr?.Cost, ofxr?.Engine, ofxr?.Load,
-            ReadFlightMonitor(sources.BoostStatus, pid, start, end, flying));
+            ReadFlightMonitor(sources.BoostStatus, pid, start, end, flying), ofxr?.Hitches);
     }
 
     // ---- dcs.log ---------------------------------------------------------------------------------------------------
@@ -245,7 +259,7 @@ public static partial class LastFlight
 
     /// <param name="FlyingFromMs">The flying seconds' span on OFXR's log timeline (milliseconds since it started).</param>
     public sealed record OfxrResult(FramegenShare? Share, FrameTimes? Times, FrameCadence? Pacing = null, FramegenCost? Cost = null, EngineComparison? Engine = null,
-        FrameLoad? Load = null, double? FlyingFromMs = null, double? FlyingToMs = null);
+        FrameLoad? Load = null, double? FlyingFromMs = null, double? FlyingToMs = null, HitchSignals? Hitches = null);
 
     /// <summary>One streaming pass over OFXR's flight log, cached by size and timestamp; the engine switches come from
     /// another file and are applied to the cached frames each time.</summary>
@@ -284,6 +298,8 @@ public static partial class LastFlight
         // known), and the GPU shares in permille (-1 when not known).
         private readonly List<double> _loadMs = [], _loadCpuUs = [], _loadGpuUs = [], _loadOwnShare = [], _loadGpuShare = [];
         private long _vramPeak; private int? _vramBudget, _gpuMemory;
+        // HitchSignals: when each happened (ms on the log's timeline).
+        private readonly List<double> _made = [], _givenBack = [], _inPlaceWaits = [], _resets = [], _unwritten = [];
         /// <summary>DCS frames in a second for it to count as flying (loading screens and menus run far slower).</summary>
         private const int FlyingFps = 10;
 
@@ -333,6 +349,20 @@ public static partial class LastFlight
                         _loadOwnShare.Add(known ? (c >> 32) & 0xFFFF : -1); _loadGpuShare.Add(known ? c >> 48 : -1);
                     }
                     return;
+                case "d3d11_bridge":
+                    if (Field(line, " result=", out var bridge) && Real(line, " ms=") is { } bridgeMs)
+                    {
+                        if (bridge is "9") _made.Add(bridgeMs);
+                        else if (bridge is "10") _givenBack.Add(bridgeMs);
+                        else if (bridge is "15") _inPlaceWaits.Add(bridgeMs);
+                    }
+                    return;
+                case "continuity_reset":
+                    if (Real(line, " ms=") is { } resetMs) _resets.Add(resetMs);
+                    return;
+                case "presenter_transition":
+                    if (Field(line, " result=", out var transition) && transition is "402" && Real(line, " ms=") is { } transitionMs) _unwritten.Add(transitionMs);
+                    return;
                 case "vram_status":
                     if (Field(line, " result=", out var kind) && kind is "1" && Whole(line, " a=") is { } a && Whole(line, " b=") is { } b
                         && (long)(a & 0xFFFFFFFF) is var resident and > 0 && resident > _vramPeak)
@@ -366,10 +396,16 @@ public static partial class LastFlight
             var latency = _latency.Order().ToList();
             var times = latency.Count == 0 ? null : new FrameTimes(Percentile(latency, .5), Percentile(latency, .9), latency.Count);
             var (pacing, comparison, load, flying) = Pacing(engine);
+            HitchSignals? hitches = null;
+            if (flying is { } span && pacing is not null)
+            {
+                int In(List<double> times) => times.Count(ms => ms >= span.From && ms < span.To);
+                hitches = new(pacing.Seconds, In(_made), In(_givenBack), In(_inPlaceWaits), In(_resets), In(_unwritten));
+            }
             var gpu = _gpuUs.Order().ToList();
             var cost = gpu.Count == 0 && _vramPeak == 0 ? null
                 : new FramegenCost(gpu.Count == 0 ? null : Math.Round(Quantile(gpu, .5) / 1000, 2), _vramPeak == 0 ? null : (int)Math.Min(_vramPeak, int.MaxValue), _vramBudget, _gpuMemory);
-            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To);
+            return share is null && times is null && pacing is null && cost is null ? null : new(share, times, pacing, cost, comparison, load, flying?.From, flying?.To, hitches);
         }
 
         private (FrameCadence?, EngineComparison?, FrameLoad?, (double From, double To)?) Pacing(EngineSwitches? engine)

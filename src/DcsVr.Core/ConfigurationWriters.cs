@@ -283,6 +283,8 @@ public static class ConfigurationWriters
         lazy_runtime_swapchains={(p.OfxrLazySwapchains ? 1 : 0)}
         single_swapchain_rings={(p.OfxrSingleRings ? 1 : 0)}
         capture_at_end_frame={(p.OfxrCaptureAtEndFrame ? 1 : 0)}
+        lazy_runtime_reclaim_ms={(p.OfxrKeepRuntimeImages ? 0 : 5000)}
+        in_place_spare_image={(p.OfxrInPlaceSpareImage ? 1 : 0)}
 
         [diagnostics]
         logging_enabled={(p.DiagnosticRecorder ? 1 : 0)}

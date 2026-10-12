@@ -26,7 +26,10 @@ public sealed partial class FlightMonitor : IDisposable
     public const string FilePrefix = "flight-";
     public const string Columns = "ms,cpu_pct,dcs_cpu_pct,t1,t1_pct,t2,t2_pct,t3,t3_pct,other_cpu,other_cpu_pct,gpu_pct,gpu_mhz,gpu_c,gpu_w,throttle,vram_mib,dcs_gpu_pct,other_gpu,other_gpu_pct";
     public const int KeepFiles = 10;
-    public const int GpuEngineEverySeconds = 5;
+    /// <summary>The "GPU Engine" counters make Windows ask the graphics kernel for every process's time on every GPU
+    /// engine, which can hold the driver up while DCS renders: 30 s (was 5 s), as DCS's own GPU share is already in
+    /// OFXR's per-frame frame_load records.</summary>
+    public const int GpuEngineEverySeconds = 30;
 
     private readonly int _dcsPid;
     private readonly StreamWriter _writer;

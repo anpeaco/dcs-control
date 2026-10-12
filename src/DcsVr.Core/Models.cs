@@ -165,6 +165,14 @@ public sealed record VrProfile
     /// <summary>capture_at_end_frame (OFXR 0.2.12): OFXR takes its copy of DCS's eye images at xrEndFrame rather than when
     /// DCS releases them, so an eye drawn to after its release is not a frame old in that eye alone.</summary>
     public bool OfxrCaptureAtEndFrame { get; init; } = true;
+    /// <summary>lazy_runtime_reclaim_ms=0 (fork patch 0020): a runtime swapchain made for a frame DCS showed as its own
+    /// (a pause, a menu, a hitch) is kept, instead of being destroyed 5 s later and made again on DCS's frame thread the
+    /// next time (six of each in one 6-minute flight). Off: 5000, the layer's default.</summary>
+    public bool OfxrKeepRuntimeImages { get; init; } = true;
+    /// <summary>in_place_spare_image (fork patch 0022): with history_in_place, DCS's swapchains get one image more than
+    /// the runtime's, so DCS's next frame is less often held on the GPU behind frame generation still reading the image
+    /// it writes (counted as d3d11_bridge result=15 in OFXR's log).</summary>
+    public bool OfxrInPlaceSpareImage { get; init; } = true;
     public FpsLimitMode FpsLimit { get; init; }
     public double HeadsetRefreshHz { get; init; } = 90;
     /// <summary>The refresh rate is read from the headset software (<see cref="HeadsetRefresh"/>) whenever it can be;
