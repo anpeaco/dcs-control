@@ -6,18 +6,68 @@
 - The autopilot is engaged by cockpit triggers: UFC PB 9 (A/P menu), PB 3 (ALT HOLD), A/P key
   (heading hold + altitude hold with wings level).
 - The random helicopter dice (trigger 13) are fixed: both Hinds at T+1 min, no Hip.
+- Script timing (unless --no-timing): a script run first at mission start brackets every function the mission's
+  scripts schedule, and every event handler call, with two dcs.log lines, so each one's hold on DCS's main thread
+  can be read afterwards (scripts/analyze-flight-spikes.py). About two log lines per call; the same in every run.
 
-usage: python -I miz_build_perf.py <source.miz> <output.miz>
+usage: python -I make-perf-mission.py <source.miz> <output.miz> [--no-timing]
 """
 import sys
 import zipfile
 
 import lupa
 
-src, dst = sys.argv[1], sys.argv[2]
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+timing = "--no-timing" not in sys.argv[1:]
+src, dst = args[0], args[1]
 zin = zipfile.ZipFile(src)
 L = lupa.LuaRuntime()
 L.execute(zin.read("mission").decode("utf-8"))
+
+# DCS's mission environment has no clock (MissionScripting.lua removes os), so the script only marks the start and
+# end of each call: "PERFT>n name" and "PERFT<n" (unique, so dcs.log's duplicate folding leaves them alone), and the
+# two lines' millisecond timestamps time it. name: T for a scheduled function, E<event id> for an event handler,
+# then the first letters of the defining script and the line the function starts on. Errors pass through as before.
+TIMING = r'''-- PERF TEST script timing (scripts/make-perf-mission.py): "PERFT>n name" / "PERFT<n" in dcs.log around every
+-- scheduled function and event handler call.
+do
+  local log, seq, dbg = env.info, 0, rawget(_G, 'debug')
+  local function where(f)
+    if dbg and dbg.getinfo then
+      local ok, d = pcall(dbg.getinfo, f, 'S')
+      if ok and d then return ' ' .. string.sub(string.gsub(tostring(d.source), '[^%w]', ''), 1, 10) .. ':' .. tostring(d.linedefined) end
+    end
+    return ''
+  end
+  local function finish(n, ok, ...)
+    log('PERFT<' .. n)
+    if not ok then error((...), 0) end
+    return ...
+  end
+  local function timed(name, f, ...)
+    seq = seq + 1
+    local n = seq
+    log('PERFT>' .. n .. ' ' .. name)
+    return finish(n, pcall(f, ...))
+  end
+  local schedule = timer.scheduleFunction
+  timer.scheduleFunction = function(f, arg, t)
+    local name = 'T' .. where(f)
+    return schedule(function(a, time) return timed(name, f, a, time) end, arg, t)
+  end
+  local addHandler = world.addEventHandler
+  world.addEventHandler = function(h)
+    if type(h) == 'table' and type(h.onEvent) == 'function' then
+      local on, at = h.onEvent, where(h.onEvent)
+      h.onEvent = function(self, e) return timed('E' .. tostring(type(e) == 'table' and e.id or '?') .. at, on, self, e) end
+    end
+    return addHandler(h)
+  end
+  log('PERFT timing on')
+end
+'''
+L.globals().PERF_TIMING = timing
+L.globals().TIMING = TIMING
 
 L.execute(r'''
 local function copy(t)
@@ -103,6 +153,20 @@ local note = "PERF TEST: autopilot engaged (heading + altitude hold). The UFC sh
 local script = string.format('trigger.action.outText(%q, 20)', note)
 add(nil, 12, { predicate = 'a_do_script', text = script },
   string.format('a_do_script(%q);', script), 'PERF: autopilot note')
+
+-- Script timing: a first action of the mission-start script trigger (58), so it is in place before any script
+-- schedules anything, and the choreography keeps its own line numbers.
+if PERF_TIMING then
+  local rule = mission.trigrules[58]
+  assert(rule.predicate == 'triggerStart' and #rule.actions == 1 and rule.actions[1].predicate == 'a_do_script'
+    and rule.actions[1].text:find('RadioVoice', 1, true), 'trigger 58 is not the radio and choreography script')
+  assert(mission.trig.actions[58]:sub(1, 13) == 'a_do_script("', 'trigger 58 compiled differently')
+  local first = copy(rule.actions[1])
+  first.text = TIMING
+  table.insert(rule.actions, 1, first)
+  mission.trig.actions[58] = string.format('a_do_script(%q);', TIMING) .. mission.trig.actions[58]
+  rule.comment = rule.comment .. ' (PERF TEST: script timing first)'
+end
 
 -- Serialize in DCS's own layout, keys sorted (numbers first) so the output is stable.
 local function key(k)

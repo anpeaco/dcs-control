@@ -42,6 +42,8 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Working; see M3 |
 | M3 | Steady seconds leave out time the headset session was not FOCUSED (a headset or Virtual Desktop menu); S14's "frames spent the budget" counts only waits that ran to the budget's limit | `LastFlight.cs`, engine module `render_wait.h` (uncommitted) | measurement only | Checked on the 13:37 log |
 | S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | Flown once (12 Oct 14:16): unwritten generated frames down about 20×, but late frames not comparable yet (needs Match refresh on the perf-test mission) |
+| M4 | Perf-test mission times its scripts: every scheduled function and event handler call is bracketed by `PERFT>n name` / `PERFT<n` lines in dcs.log (the mission environment has no clock) | `scripts/make-perf-mission.py`, test `scripts/test-perf-mission-timing.py` | `--no-timing` rebuilds the mission without it (byte for byte the previous one) | Installed in Saved Games; not flown |
+| M5 | Late-frame report across OFXR's log, dcs.log (with M4's timings), the flight monitor and an optional WPR trace: each late frame split along DCS's main and render threads | `scripts/analyze-flight-spikes.py`, `tools/FlightTrace` (TraceProcessor), `scripts/record-flight-trace.ps1` | measurement only | Report checked on the 13:37 and 14:16 logs; trace analysis tested only up to loading a trace (needs a recorded CPU trace) |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
@@ -209,11 +211,22 @@ What the log shows:
 
 - **R3's hypothesis holds for the hand-over**: with DCS no longer pacing itself, OFXR's xrEndFrame holds DCS (~22 ms) and releases it at a fixed point of the presenter's cycle. Each pair now arrives with time to be synthesized: almost no generated frame goes out unwritten, and the headset's queue passes it within a millisecond. In the 13:37 flight, 406 rose with the scene. This flight's GPU load was similar and 406 stayed low throughout.
 - **Hand-over figures are not comparable between frame-limit modes**: under Very high, OFXR's pacing hold is inside DCS's xrEndFrame (it was in xrWaitFrame, plus DCS's own limiter), so "hand-overs over 30 ms" (104) and xrEndFrame p99 now mostly measure the hold. Last flight should report the hold separately (M2 follow-up).
-- **Late frames come from two sources**, not from GPU load:
-  - DCS CPU spikes: frame_load CPU 55-98 ms per frame at 123.3-124.9 s; 36-73 ms at 147.4, 152.8, 198.6, 234.8 and 247.3 s.
-  - One stall inside OFXR's xrWaitFrame: 83.2 ms at 183.6 s, three DCS periods to within 0.1 ms. The presenter was idle, waiting for DCS's frame, and the GPU was idle (no synthesis from 183.547 to 183.650 s). DCS's render thread entered xrBeginFrame within 13 µs of the wait's return.
-  - Nothing in the log explains the stall. layer_wait_frame has no timing of its steps (frame_call_mutex, presenter wait, flush_session_pending_copies, state mutex): R18.
+- **Late frames, split along DCS's threads** (M5, corrected the same day: a first reading put them on DCS CPU spikes and on one unexplained OFXR stall). DCS's render thread runs a frame behind its main thread, and xrWaitFrame does not return before the previous frame is begun (OpenXR's rule). Every long xrWaitFrame of this flight returned within about 10 µs of the render thread entering xrBeginFrame: the main thread was waiting for the render thread, not for OFXR. Each late frame's time over the slot (49 frames, 823 ms in all) is therefore split into:
+
+  | Part | Usual (median) | Grown in late frames | Largest part in |
+  | --- | --- | --- | --- |
+  | xrEndFrame: OFXR's pair hold, under Very high | 22.9 ms | 334 ms | **23** frames |
+  | Render thread from xrBeginFrame to xrEndFrame (DCS's drawing, OFXR's swapchain calls) | 4.6 ms | 454 ms | 10 |
+  | Main thread outside xrWaitFrame (simulation, scripts) | 27.2 ms | 130 ms | 8 |
+  | Render thread between xrEndFrame and the next xrBeginFrame | 0.3 ms | 300 ms | 8 |
+
+  The 13:37 flight (Match refresh, regular mission) splits the same way: xrEndFrame largest in 22 of 44.
+- **Long xrEndFrame is OFXR's hold running long, after Virtual Desktop held up the presenter**: 25 of the 27 xrEndFrame calls over 30 ms were the pair hold (up to 61 ms), not the runtime. Around 234.8 s the presenter's call into Virtual Desktop's xrEndFrame took 7.4 ms, then its xrWaitFrame 20.8 ms, and the next predicted display time skipped a refresh; the pair is released a refresh or more later, and DCS with it: R19.
+- **The 83.2 ms stall at 183.6 s** was the render thread spending 83.9 ms between xrEndFrame and xrBeginFrame, outside OpenXR's frame calls (DCS's own work, or a swapchain call OFXR does not log), with the GPU idle: R18.
+- **Scripts**: the breach order (29 ms between its two dcs.log lines, a CHOREO step that gives Israeli artillery fire missions) made the late frame at 184.6 s; the "RADIO S" call at 234.56 s comes just before the 234.8 s cluster. dcs.log and OFXR's log line up to a few ms on the session's IDLE->READY change, which both record.
 - **One refresh late doubled** (21 → 43): to judge only once Match refresh has flown the same mission.
+
+Next flights: (1) Frame limit **Match refresh** on the perf-test mission (now with M4), no trace: the other side of S16. (2) One traced flight (M5, `scripts/record-flight-trace.ps1`, from an administrator PowerShell), for R18 and R19; tracing costs CPU of its own, so it is not an A/B side.
 
 ## A/B protocol (from R1)
 
@@ -287,4 +300,5 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | R15 | Switching the OFXR log in flight drains the presenter and rebuilds the synthesizer (a hitch, and a different synthesizer): A/B step 2 tests more than logging | `openxr_layer.cpp:14296` | Set the log before launch; test S3 with `flush_each_event` instead | Open |
 | R16 | Smaller: CPU Boost helper crash leaves affinity/priority changed; OFXR logs never pruned (170 MB); helper and app polling during flight; Engine page polls when hidden; 1 kHz ABOVE_NORMAL timer thread; toggles freeze all DCS threads; partw scan; shader lock across CreateVertexShader | app and engine reviews | Batch of small fixes | Open |
 | R17 | The engine module's own A/B bench measures frame interval, which the cap pins at 27.8 ms; p95 of ~144 frames per block; fixed order; blocks alias with 10 s jobs | `bench.h:50` | Measure render-thread busy time; ABBA; longer blocks | Open |
-| R18 | DCS's xrWaitFrame blocked 83.2 ms (exactly three 36 FPS periods) inside OFXR with the presenter waiting for DCS and the GPU idle; the layer's wait path logs no step | 14:16 flight, 183.55-183.63 s; `openxr_layer.cpp:6445` | Log each step of layer_wait_frame_impl over 2 ms (frame_call_mutex, presenter wait, flush copies, state mutex) as a fork patch, then fly again | Open |
+| R18 | DCS's render thread spent 83.9 ms between xrEndFrame and xrBeginFrame (outside the frame calls; GPU idle), holding its main thread 83.2 ms in xrWaitFrame | 14:16 flight, 183.55-183.63 s; M5 | A WPR trace (M5): what the render thread ran, or what woke it; then OFXR's swapchain calls timed if it is one of them | Open |
+| R19 | OFXR's pair hold in xrEndFrame runs a refresh or more long when Virtual Desktop's xrEndFrame / xrWaitFrame hold up the presenter (it misses a refresh): the largest part of the late frames in both flights | 14:16: 25 of 27 xrEndFrame over 30 ms; M5 split | A WPR trace with the presenter and Virtual Desktop's Streamer; R10 (presenter priority, the gate across Virtual Desktop's xrWaitFrame) | Open |
