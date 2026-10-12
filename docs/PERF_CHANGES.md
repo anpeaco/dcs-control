@@ -41,7 +41,7 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 | S15 | Lighter recorder threads (R6): 1 helper per job, below normal priority, no wake-up boost, no extra helper after a late job | engine module, app (aed1158) | Engine Optimizations → Advanced → **Lighter recorder threads** (off by default) | Installed, off: not flown |
 | M2 | Last flight: steady-flight **Late frames**, **Missed refreshes**, **Hand-over** rows; generated frames shown late (406, patch 0025) and staging waits (705) in Hitch signals; each flight's summary kept in `%LOCALAPPDATA%\DcsControl\flights` | `LastFlight.cs`, OFXR fork patch 0025 (d93c5e2) | measurement only | Working; see M3 |
 | M3 | Steady seconds leave out time the headset session was not FOCUSED (a headset or Virtual Desktop menu); S14's "frames spent the budget" counts only waits that ran to the budget's limit | `LastFlight.cs`, engine module `render_wait.h` (uncommitted) | measurement only | Checked on the 13:37 log |
-| S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | One run per side on the perf-test mission (14:16 Very high, 15:19 Match refresh): Very high better at the headset (missed refreshes 16.6 against 23.3/min, 406 0.3 against 5.7/s, no limiter beat); Last flight's late-frame count favours Match refresh (see the 15:19 section for why). Leaning Very high; a second run per side still to fly. Draft is on Match refresh |
+| S16 | Frame limit **Very high (300 FPS)** instead of Match refresh, so OFXR alone paces DCS (R3); for the 406 bursts and slow hand-overs of the 13:37 flight, which did not follow GPU load | profile `vd-fg-boost-opt` (draft, not in git) | Frame limit → **Match refresh** | One run per side on the perf-test mission (14:16 Very high, 15:19 Match refresh): Very high better at the headset (missed refreshes 16.6 against 23.3/min, 16.2 against 19.0 without Virtual Desktop's display-time corrections (R20), 406 0.3 against 5.7/s, no limiter beat); Last flight's late-frame count favours Match refresh (see the 15:19 section for why). Leaning Very high; a second run per side still to fly. Draft is on Match refresh |
 | M4 | Perf-test mission times its scripts: every scheduled function and event handler call is bracketed by `PERFT>n name` / `PERFT<n` lines in dcs.log (the mission environment has no clock) | `scripts/make-perf-mission.py`, test `scripts/test-perf-mission-timing.py` | `--no-timing` rebuilds the mission without it (byte for byte the previous one) | Flown 12 Oct 15:19: 2,099 calls timed; RadioVoice and Civilianai calls of 27-45 ms behind several late frames |
 | M5 | Late-frame report across OFXR's log, dcs.log (with M4's timings), the flight monitor and an optional WPR trace: each late frame split along DCS's main and render threads | `scripts/analyze-flight-spikes.py`, `tools/FlightTrace` (TraceProcessor), `scripts/record-flight-trace.ps1` | measurement only | Report checked on the 13:37, 14:16 and 15:19 logs; it times late frames from xrWaitFrame entries, Last flight from returns (the counts differ under Match refresh); trace analysis tested only up to loading a trace (needs a recorded CPU trace) |
 
@@ -258,6 +258,36 @@ What the logs show:
 
 Next flights, to finish S16 under the protocol (B A, then A B): (1) **Match refresh** again, (2) **Very high** again, same mission. If the headset figures hold, make Very high the default for Virtual Desktop with frame generation (R3). Separately: build the perf-test mission without civilian traffic (`Civilianai`) so its spawns stop showing in the A/B, and the traced flight for R18/R19.
 
+## Flight 12 October 2026 15:36 (90 Hz, 3×, Very high)
+
+Same perf-test mission, build and profile as 14:16 (Frame limit **Very high**), except the headset at **90 Hz** and frame generation **3×**: DCS paced at 30 FPS (33.3 ms slot), interval p50 33.3 ms throughout steady flight. 177 steady seconds (66-250 s). **Not part of the S16 A/B**: three things changed at once (refresh, factor, DCS rate). It answers whether 90 Hz 3× holds up against 72 Hz 2× on this PC.
+
+Late-frame counts are not comparable across the two modes as they stand (one refresh is 11.1 ms at 90 Hz, 13.9 ms at 72 Hz; DCS makes fewer frames a minute at 30 FPS), so the table adds time-based and share figures. Corrected missed refreshes leave out Virtual Desktop's once-a-second display-time corrections (R20).
+
+| Figure (steady seconds) | 14:16 (72 Hz 2×, Very high) | 15:19 (72 Hz 2×, Match refresh) | 15:36 (90 Hz 3×, Very high) |
+| --- | --- | --- | --- |
+| Late frames / min, M5 report (over 1.25 slots) | 16.9 | 25.8 | **10.9** |
+| Late frames' time over the slot, per minute | 284 ms | 482 ms | **206 ms** |
+| Missed refreshes / min, Last flight | 16.6 | 23.3 | 19.6 (and 12 doubled) |
+| ... without Virtual Desktop's corrections (R20) | 16.2 | 19.0 | 17.2 (1 doubled) |
+| ... as a share of the headset's refreshes | 0.37% | 0.44% | **0.32%** |
+| ... as time per minute | 225 ms | 264 ms | **191 ms** |
+| Generated frame still unwritten a refresh later (406) | 0.3/s | 5.7/s | **0.16/s** |
+| Headset queue after each generated frame, p50 / p90 | 0.5 / 1.2 ms | 1.3 / 16.7 ms | 0.6 / 1.2 ms |
+| DCS GPU ms p50 / p90 | 19.0 / 21.1 | 18.5 / 20.4 | 19.3 / 21.1 |
+| Frame generation GPU per pair | 2.10 ms | 1.72 ms | 2.29 ms |
+| CPU ms per frame p50 / p90 / p99 | 5.2 / 6.8 / 15.1 | 5.7 / 8.1 / 17.0 | 5.3 / 6.8 / **11.9** |
+| GPU power p50 | 311 W | 311 W | **279 W** |
+
+What the logs show:
+
+- **90 Hz 3× is the smoothest of the three on every headset figure**: fewest late frames and least time lost to them, fewest missed refreshes as a share and as time, and the lowest 406 rate yet. The trade is not in these figures: a real frame every 33.3 ms instead of 27.8 ms (more input-to-photon latency, two generated frames per real one, so more chance of visible generation artefacts). That part is the pilot's call.
+- **GPU headroom**: DCS's GPU p90 21.1 ms in a 33.3 ms slot, 279 W against 311 W. Room to raise DCS's settings at 90 Hz 3×. 90 Hz 2× (45 FPS, 22.2 ms slot) would not fit: GPU p90 21.1 ms plus about 1.7 ms of generation per pair.
+- **Where the late frames went** (M5, 32 late frames, 609 ms over the slot): OFXR's pair hold (xrEndFrame) largest in 18, DCS's drawing in 8, the render thread between frames in 3, the main thread in 3 (all three are script calls: `RadioVoice:423` 43 ms at 171.9 s on the breach order, 33 ms at 196.9 s; `RadioVoice:298` 38 ms at 117.6 s). The hold running long is R19 again. The two `Civilianai:47` spawns cost 13-14 ms this time and made no late frame.
+- **Last flight's 26 late frames/min is mostly its threshold**: in 3× it counts an interval as one refresh late from 3.5 refreshes (38.9 ms, 1.17 slots); the report counts from 1.25 slots (41.6 ms). 39 of the 81 late returns fall between the two. At 72 Hz 2× both thresholds are 1.25 slots (R21).
+- **3× release delay at its floor**: every 1-second window (801/802) had the delay at 0 µs, with the first generated frame written a median 2-4 ms after its hand-over and 20-30 of each window's 30 counted late. 406 stayed low, so Virtual Desktop's deadline is later than the hand-over and the copy waits on the GPU in time. Nothing to change yet; it means the delay cannot steer further in this mode.
+- **Rendered FPS on Last flight reads 34.2 against a target of 30**: it averages the whole flight, including 253-270 s after the session left FOCUSED (DCS at 90 FPS while the flight ended). The steady figures already leave that time out. Cosmetic; folded into R21.
+
 ## A/B protocol (from R1)
 
 1. **Measure with M2**: Late frames/min and Missed refreshes/min are the primary figures; one per change as listed under Changes.
@@ -332,3 +362,5 @@ A fresh read-only review of OFXR (frame path; GPU and resources), the engine mod
 | R17 | The engine module's own A/B bench measures frame interval, which the cap pins at 27.8 ms; p95 of ~144 frames per block; fixed order; blocks alias with 10 s jobs | `bench.h:50` | Measure render-thread busy time; ABBA; longer blocks | Open |
 | R18 | DCS's render thread spent 83.9 ms between xrEndFrame and xrBeginFrame (outside the frame calls; GPU idle), holding its main thread 83.2 ms in xrWaitFrame | 14:16 flight, 183.55-183.63 s; M5 | A WPR trace (M5): what the render thread ran, or what woke it; then OFXR's swapchain calls timed if it is one of them | Open |
 | R19 | OFXR's pair hold in xrEndFrame runs a refresh or more long when Virtual Desktop's xrEndFrame / xrWaitFrame hold up the presenter (it misses a refresh): the largest part of the late frames in both flights | 14:16: 25 of 27 xrEndFrame over 30 ms; M5 split | A WPR trace with the presenter and Virtual Desktop's Streamer; R10 (presenter priority, the gate across Virtual Desktop's xrWaitFrame) | Open |
+| R20 | Virtual Desktop moves its predicted display time by about 4 ms (up to 7) once a second, at the same point of every second within a flight, with OFXR's presenter and DCS on time. A step that crosses half a refresh is counted by Last flight as a missed or doubled refresh: rarely at 72 Hz (1 of 48 at 14:16, 14 of 75 at 15:19), more at 90 Hz (7 missed and 11 of 12 doubled at 15:36). Not OFXR's 3× release window (801), which drifts against it | 14:16, 15:19, 15:36 logs: `internal_wait_frame` display times off the refresh grid by 0.15 period or more, no DCS late frame within 3 frames | Last flight: count off-grid steps apart ("display-time corrections") instead of as missed/doubled; whether the headset shows anything at them needs Virtual Desktop's own overlay | Open |
+| R21 | Last flight's late-frame steps in 3× start at 3.5 refreshes (1.17 slots), the report's at 1.25 slots, so the two disagree in 3× only (26 against 10.9/min at 15:36); Rendered FPS averages time outside FOCUSED | `LastFlight.cs:530`, 15:36 flight | One threshold for both (1.25 slots, or a whole refresh over the slot); Rendered FPS over steady seconds | Open |
