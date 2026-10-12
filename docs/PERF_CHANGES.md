@@ -2,7 +2,7 @@
 
 Every change made to remove a cause of delay or stutter, with what to look at after a flight to see whether it worked, and how to switch it back if performance gets worse. One change per row; the **Status** column is updated after each test flight. Keep the order of the A/B flights below: one change per flight, same mission, same route, Virtual Desktop's performance overlay on.
 
-Status values: **Not flown** (built and tested offline only), **Confirmed** (a flight showed the expected effect), **No effect** (flown, nothing measurable), **Regressed** (flown, worse: switched back, see the entry).
+All of these are in release 0.5.6 preview as built on 12 October 2026 (OFXR layer with fork patches 0001-0022). Status values: **Not flown** (built and tested offline only), **Confirmed** (a flight showed the expected effect), **No effect** (flown, nothing measurable), **Regressed** (flown, worse: switched back, see the entry).
 
 ## Baseline
 
@@ -21,18 +21,18 @@ DCS was capped at 36 FPS (27.8 ms frame slot). The engine optimizations' in-flig
 
 ## Changes
 
-| ID | Change | Where | Switch to undo it | Status |
+| ID | Change | Where (commit) | Switch to undo it | Status |
 | --- | --- | --- | --- | --- |
-| S1 | Overlay no longer holds its lock across the runtime's xrEndFrame | OFXR fork patch 0019 | none (locking only) | Not flown |
-| S2 | Headset swapchains kept once made | OFXR fork patch 0020 | Framegen → Advanced → **Keep headset images once made** | Not flown |
-| S3 | OFXR flight log written by a background thread | OFXR fork patch 0021 | none; `flush_each_event=1` makes it synchronous again | Not flown |
-| S4 | Spare image for in-place reading, and a count of the waits | OFXR fork patch 0022 | Framegen → Advanced → **Spare image for in-place reading** | Not flown |
-| S5 | Terrain prefetch fix yields instead of sleeping | engine module (`prefetch_fix.h`) | Engine Optimizations → Terrain prefetch fix → Observe (compares with no skipping) | Not flown |
-| S6 | Shadow-plan wait on DCS's render thread capped at 2 ms (was 20 ms) | engine module (`shadow_batch.h`) | none | Not flown |
-| S7 | CPU Boost leaves affinity alone on a single-CCD CPU | `CpuTopology.cs` | turn CPU Boost off to compare | Not flown |
-| S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` | CPU Boost → **Record CPU and GPU use** off to compare | Not flown |
-| S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft) | Framegen → Advanced → **Late frame skip** | Not flown |
-| M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card | measurement only | Not flown |
+| S1 | Overlay no longer holds its lock across the runtime's xrEndFrame | OFXR fork patch 0019 (8e10a49) | none (locking only) | Not flown |
+| S2 | Headset swapchains kept once made | OFXR fork patch 0020 (8e10a49) | Framegen → Advanced → **Keep headset images once made** | Not flown |
+| S3 | OFXR flight log written by a background thread | OFXR fork patch 0021 (8e10a49) | none; `flush_each_event=1` makes it synchronous again | Not flown |
+| S4 | Spare image for in-place reading, and a count of the waits | OFXR fork patch 0022 (8e10a49) | Framegen → Advanced → **Spare image for in-place reading** | Not flown |
+| S5 | Terrain prefetch fix yields instead of sleeping | engine module, `prefetch_fix.h` (b72e738) | Engine Optimizations → Terrain prefetch fix → Observe (compares with no skipping) | Not flown |
+| S6 | Shadow-plan wait on DCS's render thread capped at 2 ms (was 20 ms) | engine module, `shadow_batch.h` (b72e738) | none | Not flown |
+| S7 | CPU Boost leaves affinity alone on a single-CCD CPU | `CpuTopology.cs` (8e10a49) | turn CPU Boost off to compare | Not flown |
+| S8 | Flight helper asks for every process's GPU time every 30 s (was 5 s) | `FlightMonitor.cs` (8e10a49) | CPU Boost → **Record CPU and GPU use** off to compare | Not flown |
+| S9 | Late frame skip off in the profile | profile `vd-fg-boost-opt` (draft, not in git) | Framegen → Advanced → **Late frame skip** | Not flown |
+| M1 | Last flight shows **Hitch signals** | `LastFlight.cs`, overview card (8e10a49) | measurement only | Not flown |
 
 ### S1: overlay lock off the runtime's frame call (OFXR 0019)
 
