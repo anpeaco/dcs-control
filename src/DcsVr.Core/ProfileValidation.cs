@@ -90,6 +90,10 @@ public static class ProfileValidation
             // Virtual Desktop sets the refresh rate in its app on the headset; the frame limit follows the rate set here.
             if (profile.HeadsetRefreshHz is not (72 or 80 or 90 or 120))
                 issues.Add(new("quest-refresh", IssueSeverity.Warning, "Quest 3 runs at 72, 80, 90 or 120 Hz. Set the rate Virtual Desktop uses (its app on the headset, Settings → Streaming → Frame rate)."));
+            // A runtime the pilot chose is used as chosen; one that is not VDXR is pointed out (another route's, or the 32-bit one).
+            if (!profile.Desktop && !string.IsNullOrWhiteSpace(profile.RuntimeManifestPath) &&
+                !Path.GetFileName(profile.RuntimeManifestPath).Equals("virtualdesktop-openxr.json", StringComparison.OrdinalIgnoreCase))
+                issues.Add(new("vdxr-manifest", IssueSeverity.Warning, "The Quest 3 route runs through Virtual Desktop's OpenXR runtime, but the runtime chosen under Runtime override is not VDXR's virtualdesktop-openxr.json. Select that file in the Virtual Desktop Streamer's OpenXR folder, or clear the override."));
         }
         if (profile.CpuBoost || profile.FreeVram)
         {

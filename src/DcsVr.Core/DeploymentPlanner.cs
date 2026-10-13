@@ -110,6 +110,8 @@ public sealed class DeploymentPlanner(ComponentLocations components)
         // DCS asks for quad views only with this option on; stereo Cheeky needs it off, otherwise it is left alone.
         if (profile.QuadViews != QuadProvider.None) Require("VR.openxr_quadView", true);
         else if (profile.UsesCheeky && current.Get("VR", "openxr_quadView") is not null) Require("VR.openxr_quadView", false);
+        // The Quest 3 has no eye tracking: DCS's eye-gaze option, left on from a Pimax or Sboys flight, is turned off.
+        if (!profile.Desktop && profile.Runtime == RuntimeKind.VirtualDesktop && current.Get("VR", "openxr_eyeGaze") is not null) Require("VR.openxr_eyeGaze", false);
         // Cheeky and DLSS 5 work on DCS's DLSS Super Resolution.
         if (profile.UsesCheeky) Require("graphics.Upscaling", "DLSS");
         // Frame pacing is set for the headset; on a monitor DCS keeps the user's own frame cap and vertical sync.

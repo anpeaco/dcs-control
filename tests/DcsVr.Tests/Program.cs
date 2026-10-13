@@ -3124,7 +3124,9 @@ Test("Quest 3 refresh rate is the profile's own and must be one the Quest 3 runs
 foreach (var withQuadViews in new[] { false, true })
     Test("Quest 3 deployment through VDXR " + (withQuadViews ? "with fixed Quad Views" : "with framegen only"), () =>
     {
-        var dir = "quest-" + (withQuadViews ? "quad" : "framegen"); var exe = Make(dir + "/bin/DCS.exe", "fixture"); var options = Make(dir + "/options.lua", Lua);
+        // DCS's eye-gaze option left on from a Pimax or Sboys flight.
+        var questLua = Lua.Replace("openxr_quadView = true", "openxr_quadView = true, openxr_eyeGaze = true");
+        var dir = "quest-" + (withQuadViews ? "quad" : "framegen"); var exe = Make(dir + "/bin/DCS.exe", "fixture"); var options = Make(dir + "/options.lua", questLua);
         var vdxr = Make(dir + "/vd/virtualdesktop-openxr.json", "{\"runtime\":{\"library_path\":\".\\\\virtualdesktop-openxr.dll\"}}"); Make(dir + "/vd/virtualdesktop-openxr.dll", "fixture");
         var pimax = Make(dir + "/pimax.json", "{\"runtime\":{\"library_path\":\"pimax.dll\"}}"); Make(dir + "/pimax.dll", "fixture");
         // DLSS 5 and pupil shift left on in the profile: neither may reach DCS on this route.
@@ -3141,6 +3143,7 @@ foreach (var withQuadViews in new[] { false, true })
         Require(!plan.Files.Any(f => f.Path.Contains("pupilshift", StringComparison.OrdinalIgnoreCase) || f.Path.Contains("cheeky", StringComparison.OrdinalIgnoreCase)));
         var lua = new LuaOptions(System.Text.Encoding.UTF8.GetString(plan.Files.Single(f => f.Path == Path.GetFullPath(options)).Content));
         Require(lua.Get("VR", "enable") == "true" && lua.Get("graphics", "Upscaling") == "\"DLSS\"", "VR on; DCS's own upscaler left as the user set it");
+        Require(lua.Get("VR", "openxr_eyeGaze") == "false", "the Quest 3 has no eye tracking: DCS's eye-gaze option is off");
         var ini = System.Text.Encoding.Unicode.GetString(plan.Files.Single(f => f.Path.EndsWith("ofxr_bridge.ini")).Content);
         Require(ini.Contains("enabled=1") && ini.Contains("d3d11_bridge=1") && ini.Contains("own_binding_queue=1") && ini.Contains("backend=nvidia"));
         if (withQuadViews)
@@ -3149,13 +3152,18 @@ foreach (var withQuadViews in new[] { false, true })
             foreach (var expected in new[] { "force_no_eye_tracking=1", "horizontal_fixed_section=0.55", "vertical_fixed_section=0.5", "peripheral_multiplier=0.4", "focus_multiplier=1", "dcsvr_saccade_widening=0", "dcsvr_gaze_deadzone=0" })
                 Require(cfg.Contains(expected), expected);
         }
-        var store = new OriginalsStore(Path.Combine(root, dir + "/originals")); store.Apply(plan); Require(store.RestoreOriginals().Complete); Require(File.ReadAllText(options) == Lua);
+        var store = new OriginalsStore(Path.Combine(root, dir + "/originals")); store.Apply(plan); Require(store.RestoreOriginals().Complete); Require(File.ReadAllText(options) == questLua);
     });
 Test("Quest 3 needs VDXR; another route's runtime is never used instead", () =>
 {
     var inv = new InventorySnapshot { DcsExecutable = Make("quest-no-vdxr/bin/DCS.exe", "fixture"), OptionsPath = Make("quest-no-vdxr/options.lua", Lua), PimaxRuntime = Make("quest-no-vdxr/pimax.json", "{}") };
     Require(ProfileValidation.Validate(ProfilePresets.QuestFramegen, inv).Single(i => i.Code == "vdxr-not-found").Severity == IssueSeverity.Error);
     Require(!ProfileValidation.Validate(ProfilePresets.QuestFramegen with { RuntimeManifestPath = inv.PimaxRuntime }, inv).Any(i => i.Code == "vdxr-not-found"), "a runtime the pilot chose is accepted");
+    foreach (var other in new[] { inv.PimaxRuntime, @"D:\VD\OpenXR\virtualdesktop-openxr-32.json" })
+        Require(ProfileValidation.Validate(ProfilePresets.QuestFramegen with { RuntimeManifestPath = other }).Single(i => i.Code == "vdxr-manifest").Severity == IssueSeverity.Warning, "but one that is not VDXR is pointed out: " + other);
+    foreach (var manifest in new[] { @"D:\VD\OpenXR\VirtualDesktop-OpenXR.json", null })
+        Require(!ProfileValidation.Validate(ProfilePresets.QuestFramegen with { RuntimeManifestPath = manifest }).Any(i => i.Code == "vdxr-manifest"), manifest ?? "no override");
+    Require(!ProfileValidation.Validate(ProfilePresets.QuestFramegen with { RuntimeManifestPath = inv.PimaxRuntime, Desktop = true }).Any(i => i.Code == "vdxr-manifest"), "not with Optimizations only");
     Require(inv.RuntimeFor(RuntimeKind.VirtualDesktop) is null && inv.RuntimeFor(RuntimeKind.Pimax) == inv.PimaxRuntime);
     Throws<InvalidDataException>(() => new DeploymentPlanner(new(null, null, null, null, null, DeferredOfxr)).Build(ProfilePresets.QuestFramegen, inv, Path.Combine(root, "quest-no-vdxr/managed")));
 });
